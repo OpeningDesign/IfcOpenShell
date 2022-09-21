@@ -258,6 +258,7 @@ class IfcImporter:
             self.merge_materials_by_colour()
             self.profile_code("Merging by colour")
         self.set_default_context()
+        self.hide_empties()
         self.profile_code("Setting default context")
         self.update_progress(100)
         bpy.context.window_manager.progress_end()
@@ -1249,6 +1250,8 @@ class IfcImporter:
         project_collection = bpy.context.view_layer.layer_collection.children[self.project["blender"].name]
         project_collection.children[self.opening_collection.name].hide_viewport = True
         project_collection.children[self.type_collection.name].hide_viewport = True
+        project_collection.children[self.view_collection.name].hide_viewport = True
+
 
     def clean_mesh(self):
         obj = None
@@ -1348,20 +1351,20 @@ class IfcImporter:
             self.project["blender"].children.link(self.type_collection)
 
     def create_views_collection(self):
-        view_collection = None
+        self.view_collection = None
         for collection in self.project["blender"].children:
             if collection.name == "Views":
-                view_collection = collection
+                self.view_collection = collection
                 break
-        if not view_collection:
-            view_collection = bpy.data.collections.new("Views")
-            self.project["blender"].children.link(view_collection)
+        if not self.view_collection:
+            self.view_collection = bpy.data.collections.new("Views")
+            self.project["blender"].children.link(self.view_collection)
         for element in self.file.by_type("IfcAnnotation"):
             if element.ObjectType == "DRAWING":
                 group = [r for r in element.HasAssignments if r.is_a("IfcRelAssignsToGroup")][0].RelatingGroup
                 collection = bpy.data.collections.new("IfcGroup/" + group.Name)
                 self.collections[group.GlobalId] = collection
-                view_collection.children.link(collection)
+                self.view_collection.children.link(collection)
 
     def create_spatial_decomposition_collection(self, parent, related_objects):
         for element in related_objects:
@@ -1986,6 +1989,17 @@ class IfcImporter:
     def set_matrix_world(self, obj, matrix_world):
         obj.matrix_world = matrix_world
         tool.Geometry.record_object_position(obj)
+
+    def hide_empties(self):
+        all_objects = bpy.context.scene.objects
+        for obj in all_objects:
+            element = tool.Ifc.get_entity(obj)
+            if obj.type == "EMPTY" \
+            and not element.is_a("IfcAnnotation") \
+            and not re.search("^Ifc.*Type\/", obj.name):
+                obj.hide_set(True)
+
+
 
 
 class IfcImportSettings:

@@ -714,6 +714,7 @@ class ActivateView(bpy.types.Operator):
                     "Views" in project_collection.children
                     and collection.name in project_collection.children["Views"].children
                 ):
+                    project_collection.children["Views"].hide_viewport = False
                     project_collection.children["Views"].children[collection.name].hide_viewport = True
                     bpy.data.collections.get(collection.name).hide_render = True
 
