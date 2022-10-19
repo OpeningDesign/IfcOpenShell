@@ -56,7 +56,6 @@ def mode_callback(obj, data):
         if not parametric or parametric["Engine"] != "BlenderBIM.DumbLayer2":
             return
         if obj.mode == "EDIT":
-            bpy.ops.bim.dynamically_void_product(obj=obj.name)
             IfcStore.edited_objs.add(obj)
             bm = bmesh.from_edit_mesh(obj.data)
             bmesh.ops.dissolve_limit(bm, angle_limit=pi / 180 * 1, verts=bm.verts, edges=bm.edges)
@@ -562,6 +561,7 @@ class DumbWallGenerator:
         return self.create_wall(link_to_scene)
 
     def create_wall(self, link_to_scene):
+        props = bpy.context.scene.BIMModelProperties
         ifc_class = self.get_relating_type_class(self.relating_type)
         mesh = bpy.data.meshes.new("Dummy")
         obj = bpy.data.objects.new(tool.Model.generate_occurrence_name(self.relating_type, ifc_class), mesh)
@@ -569,7 +569,7 @@ class DumbWallGenerator:
             matrix_world = Matrix.Rotation(self.rotation, 4, "Z")
             matrix_world.col[3] = self.location.to_4d()
             if self.collection_obj and self.collection_obj.BIMObjectProperties.ifc_definition_id:
-                matrix_world[2][3] = self.collection_obj.location[2]
+                matrix_world[2][3] = self.collection_obj.location[2] + (props.rl1 * self.unit_scale)
             obj.matrix_world = matrix_world
             bpy.context.view_layer.update()
             self.collection.objects.link(obj)
@@ -613,7 +613,6 @@ class DumbWallGenerator:
             obj=obj,
             representation=representation,
             should_reload=True,
-            enable_dynamic_voids=False,
             is_global=True,
             should_sync_changes_first=False,
         )
@@ -840,7 +839,6 @@ class DumbWallJoiner:
             obj=wall1,
             representation=body,
             should_reload=True,
-            enable_dynamic_voids=False,
             is_global=True,
             should_sync_changes_first=False,
         )
@@ -1126,7 +1124,6 @@ class DumbWallJoiner:
             obj=obj,
             representation=new_body,
             should_reload=True,
-            enable_dynamic_voids=False,
             is_global=True,
             should_sync_changes_first=False,
         )

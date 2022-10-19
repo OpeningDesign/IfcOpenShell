@@ -18,6 +18,8 @@
 
 import os
 import bpy
+import ifcopenshell
+import ifcopenshell.util.unit
 import blenderbim.tool as tool
 import blenderbim.bim.module.type.prop as type_prop
 from blenderbim.bim.helper import prop_with_search, close_operator_panel
@@ -97,6 +99,9 @@ class BimToolUI:
             return
         if cls.props.ifc_class == "IfcWallType":
             row = cls.layout.row(align=True)
+            row.prop(data=cls.props, property="rl1", text="RL")
+
+            row = cls.layout.row(align=True)
             row.prop(data=cls.props, property="extrusion_depth", text="Height")
 
             row = cls.layout.row(align=True)
@@ -111,9 +116,12 @@ class BimToolUI:
             row = cls.layout.row(align=True)
             label = "Height" if cls.props.ifc_class == "IfcColumn" else "Length"
             row.prop(data=cls.props, property="extrusion_depth", text=label)
+        elif cls.props.ifc_class in ("IfcDoorType", "IfcDoorStyle"):
+            row = cls.layout.row(align=True)
+            row.prop(data=cls.props, property="rl1", text="RL")
         elif cls.props.ifc_class in ("IfcWindowType", "IfcWindowStyle", "IfcDoorType", "IfcDoorStyle"):
             row = cls.layout.row(align=True)
-            row.prop(data=cls.props, property="rl", text="RL")
+            row.prop(data=cls.props, property="rl2", text="RL")
 
     @classmethod
     def draw_edit_object_interface(cls, context):
@@ -493,7 +501,8 @@ class Hotkey(bpy.types.Operator, tool.Ifc.Operator):
         if len(bpy.context.selected_objects) == 2:
             bpy.ops.bim.add_opening()
         else:
-            bpy.ops.bim.add_potential_opening(x=self.x, y=self.y, z=self.z)
+            unit_scale = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
+            bpy.ops.bim.add_potential_opening(x=self.x * unit_scale, y=self.y * unit_scale, z=self.z * unit_scale)
             self.props.x = self.x
             self.props.y = self.y
             self.props.z = self.z
