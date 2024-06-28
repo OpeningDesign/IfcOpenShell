@@ -160,7 +160,6 @@ class BIM_PT_project(Panel):
 
         row = self.layout.row(align=True)
         row.operator("bim.load_project_elements")
-        row.operator("bim.unload_project", text="", icon="CANCEL")
 
     def draw_project_ui(self, context):
         props = context.scene.BIMProperties
