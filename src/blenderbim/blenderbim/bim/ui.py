@@ -330,6 +330,8 @@ class BIM_ADDON_preferences(bpy.types.AddonPreferences):
         row = self.layout.row()
         row.prop(context.scene.DocProperties, "stylesheet_path")
         row = self.layout.row()
+        row.prop(context.scene.DocProperties, "schedules_stylesheet_path")
+        row = self.layout.row()
         row.prop(context.scene.DocProperties, "markers_path")
         row = self.layout.row()
         row.prop(context.scene.DocProperties, "symbols_path")
