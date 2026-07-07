@@ -26,6 +26,7 @@ import numpy as np
 import ifcopenshell
 import ifcopenshell.api.context
 import ifcopenshell.api.geometry
+import ifcopenshell.api.style
 import ifcopenshell.util.element
 import ifcopenshell.util.placement
 import ifcopenshell.util.representation
@@ -36,6 +37,33 @@ import ifcopenshell.util.unit
 # Possible optimisation to linalg.norm?
 
 PrioritisedLayer = namedtuple("PrioritisedLayer", "priority thickness")
+
+
+def get_representation_styles(
+    representation: ifcopenshell.entity_instance,
+) -> list[ifcopenshell.entity_instance]:
+    """Collect the surface styles assigned directly to a representation's items,
+    in item order, so they can be reassigned to a regenerated representation.
+
+    Only the first surface style per item is collected, matching how
+    :func:`ifcopenshell.api.style.assign_representation_styles` consumes one
+    style per item. Items without a style are skipped, which is correct for the
+    common single-item wall body.
+    """
+    styles = []
+    for item in representation.Items:
+        for styled_item in item.StyledByItem:
+            item_styles = []
+            for style in styled_item.Styles:
+                if style.is_a("IfcPresentationStyleAssignment"):
+                    item_styles.extend(style.Styles)
+                else:
+                    item_styles.append(style)
+            surface_style = next((s for s in item_styles if s.is_a("IfcSurfaceStyle")), None)
+            if surface_style is not None:
+                styles.append(surface_style)
+                break
+    return styles
 
 
 def regenerate_wall_representation(
@@ -336,6 +364,23 @@ class Regenerator:
 
         body_rep = builder.get_representation(self.body, items=[item])
         if old_rep := ifcopenshell.util.representation.get_representation(wall, self.body):
+            # The old body items may carry styles assigned directly via
+            # IfcStyledItem (e.g. a surface style on the extrusion). These would
+            # otherwise be lost when the old representation is removed, so carry
+            # them over to the freshly built body items. Reassigning before the
+            # removal also keeps each surface style referenced, so remove_deep2
+            # does not delete a style that is still in use. See issue #4790.
+            styles = get_representation_styles(old_rep)
+            if styles:
+                ifcopenshell.api.style.assign_representation_styles(
+                    self.file, shape_representation=body_rep, styles=styles
+                )
+            # Drop the old IfcStyledItems first. They reference the old items as
+            # an inverse, which would otherwise keep those items (orphaned) alive
+            # through remove_deep2 and leave dangling styled geometry behind.
+            for old_item in old_rep.Items:
+                for styled_item in list(old_item.StyledByItem):
+                    self.file.remove(styled_item)
             ifcopenshell.util.element.replace_element(old_rep, body_rep)
             ifcopenshell.util.element.remove_deep2(self.file, old_rep)
         else:
