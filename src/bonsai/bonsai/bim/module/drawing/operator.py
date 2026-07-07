@@ -1033,12 +1033,16 @@ class CreateDrawing(bpy.types.Operator):
             if self.cprops.generate_material_layers:
                 self.generate_material_layers(context, root)
             self.merge_linework_and_add_metadata(root)
+            if self.cprops.generate_material_layers and self.cprops.join_coplanar_surfaces:
+                self.remove_coplanar_boundary_lines(root)
             self.move_elements_to_top(root)
         elif self.cprops.cut_mode == "OPENCASCADE":
             self.move_projection_to_bottom(root)
             if self.cprops.generate_material_layers:
                 self.generate_material_layers(context, root)
             self.merge_linework_and_add_metadata(root)
+            if self.cprops.generate_material_layers and self.cprops.join_coplanar_surfaces:
+                self.remove_coplanar_boundary_lines(root)
             self.move_elements_to_top(root)
 
         if self.cprops.fill_mode == "SHAPELY":
@@ -1106,6 +1110,7 @@ class CreateDrawing(bpy.types.Operator):
         if self.cprops.fill_mode == "SVGFILL":
             results = etree.tostring(root).decode("utf8")
             svg_data_1 = results
+            from collections import defaultdict
             from xml.dom.minidom import parseString
 
             def yield_groups(n):
@@ -1120,8 +1125,19 @@ class CreateDrawing(bpy.types.Operator):
 
             ls_groups = ifcopenshell.ifcopenshell_wrapper.svg_to_line_segments(results, "projection")
 
-            for i, (ls, g1) in enumerate(zip(ls_groups, groups1)):
-                projection, g1 = g1, g1.parentNode
+            # Group projection elements by their parent section-view group so that all
+            # projection linework from the same view is merged in one cell decomposition.
+            # This enables coplanar surfaces from *different* elements to be joined.
+            groups_by_parent = defaultdict(list)
+            ls_by_parent = defaultdict(list)
+            for ls, g in zip(ls_groups, groups1):
+                pid = id(g.parentNode)
+                groups_by_parent[pid].append(g)
+                ls_by_parent[pid].extend(ls)
+
+            for pid, projection_groups in groups_by_parent.items():
+                section_parent = projection_groups[0].parentNode
+                combined_ls = ls_by_parent[pid]
 
                 svgfill_context = ifcopenshell.ifcopenshell_wrapper.context(
                     ifcopenshell.ifcopenshell_wrapper.EXACT_CONSTRUCTIONS, 1.0e-3
@@ -1129,10 +1145,11 @@ class CreateDrawing(bpy.types.Operator):
 
                 # EXACT_CONSTRUCTIONS is significantly faster than FILTERED_CARTESIAN_QUOTIENT
                 # remove duplicates (without tolerance)
-                ls = [l for l in map(tuple, set(map(frozenset, ls))) if len(l) == 2 and l[0] != l[1]]
-                svgfill_context.add(ls)
+                combined_ls = [l for l in map(tuple, set(map(frozenset, combined_ls))) if len(l) == 2 and l[0] != l[1]]
+                svgfill_context.add(combined_ls)
 
-                num_passes = 0
+                num_passes = 1
+                g2 = None
 
                 for iteration in range(num_passes + 1):
                     # initialize empty group, note that in the current approach only one
@@ -1207,11 +1224,8 @@ class CreateDrawing(bpy.types.Operator):
                     if iteration != num_passes:
                         to_remove = []
 
+                        material_cache = {}
                         for he_idx in range(0, len(pairs), 2):
-                            # @todo instead of ray_distance, better do (x.point - y.point).dot(x.normal)
-                            # to see if they're coplanar, because ray-distance will be different in case
-                            # of element surfaces non-orthogonal to the view direction
-
                             def format(x):
                                 if x is None:
                                     return None
@@ -1219,34 +1233,48 @@ class CreateDrawing(bpy.types.Operator):
                                     # found to be inside element using tree.select() no face or style info
                                     return x
                                 else:
-                                    return (x.instance.is_a(), x.ray_distance, tuple(x.position))
+                                    return (x.instance, tuple(x.position), tuple(x.normal), x.style_index)
 
                             pp = pairs[he_idx : he_idx + 2]
                             if pp == (-1, -1):
                                 continue
                             data = list(map(format, map(semantics.__getitem__, pp)))
-                            if None not in data and data[0][0] == data[1][0] and abs(data[0][1] - data[1][1]) < 1.0e-5:
-                                to_remove.append(he_idx // 2)
-                                # Print edge index and semantic data
-                                # print(he_idx // 2, *data)
+                            if None not in data and data[0][0].is_a() == data[1][0].is_a():
+                                if len(data[0]) == 2 and len(data[1]) == 2:
+                                    # Both from tree.select() -> same element = same surface
+                                    if data[0][0] == data[1][0]:
+                                        to_remove.append(he_idx // 2)
+                                elif len(data[0]) == 4 and len(data[1]) == 4:
+                                    # Both from tree.select_ray() -> coplanar + same style + same material
+                                    p1, n1, s1 = np.array(data[0][1]), np.array(data[0][2]), data[0][3]
+                                    p2, n2, s2 = np.array(data[1][1]), np.array(data[1][2]), data[1][3]
+
+                                    if s1 == s2:
+                                        if abs(1.0 - abs(np.dot(n1, n2))) < 1.0e-4:
+                                            if abs(np.dot(p1 - p2, n1)) < 1.0e-4:
+                                                def get_cached_material(inst):
+                                                    id_ = inst.id()
+                                                    if id_ not in material_cache:
+                                                        mats = ifcopenshell.util.element.get_materials(inst)
+                                                        material_cache[id_] = tuple(m.id() for m in mats) if mats else (-1,)
+                                                    return material_cache[id_]
+
+                                                if get_cached_material(data[0][0]) == get_cached_material(data[1][0]):
+                                                    to_remove.append(he_idx // 2)
+                            # print(he_idx // 2, *data)
 
                         svgfill_context.merge(to_remove)
 
-                # Swap the XML nodes from the files
-                # Remove the original hidden line node we still have in the serializer output
-                g1.removeChild(projection)
+                # Replace all per-element projection groups with one merged cell group.
+                # SVG draw order: projections must be below sections, so insert first.
+                for pg in projection_groups:
+                    section_parent.removeChild(pg)
                 g2.setAttribute("class", "projection")
-                # Find the children of the projection node parent
-                children = [x for x in g1.childNodes if x.nodeType == x.ELEMENT_NODE]
+                children = [x for x in section_parent.childNodes if x.nodeType == x.ELEMENT_NODE]
                 if children:
-                    # Insert the new semantically enriched cell-based projection node
-                    # *before* the node with sections from the serializer. SVG derives
-                    # draw order from node order in the DOM so sections are draw over
-                    # the projections.
-                    g1.insertBefore(g2, children[0])
+                    section_parent.insertBefore(g2, children[0])
                 else:
-                    # This generally shouldn't happen
-                    g1.appendChild(g2)
+                    section_parent.appendChild(g2)
 
             results = dom1.toxml()
             results = results.encode("ascii", "xmlcharrefreplace")
@@ -1617,6 +1645,581 @@ class CreateDrawing(bpy.types.Operator):
                 path.attrib["d"] = d
                 g.set("class", " ".join(list(polygon_classes)))
                 group.append(g)
+
+    def remove_coplanar_boundary_lines(self, root):
+        """Remove projection line segments shared between same-material elements.
+
+        After merge_linework_and_add_metadata() adds material-* CSS classes,
+        this scans all per-element projection <g> groups under each common
+        parent, finds path segments (M x0,y0 L x1,y1) that appear in two or
+        more groups that carry the same material-* class, and deletes them from
+        both groups so coplanar surfaces of the same material appear seamless.
+        """
+        SVG = "http://www.w3.org/2000/svg"
+        TOL = 0.01  # SVG coordinate tolerance for matching line endpoints
+
+        # Determine whether the camera is looking up (RCP) or down (plan view).
+        # In Blender the camera looks along its local -Z axis. If the camera's
+        # local Z axis in world space points downward, the camera looks upward.
+        camera_looks_up = self.camera.matrix_world.col[2].z < 0
+
+        obj_cache = {}
+
+        def get_obj(guid):
+            if guid in obj_cache:
+                return obj_cache[guid]
+            element = self.get_element_by_guid(guid)
+            obj = tool.Ifc.get_object(element) if element is not None else None
+            obj_cache[guid] = obj
+            return obj
+
+        adjacency_cache = {}
+
+        def are_coplanar_and_adjacent(guid_a, guid_b, tol=0.01):
+            """True if the two meshes share a vertex AND have parallel face normals.
+
+            Sharing a vertex confirms physical adjacency (rules out depth-stacked elements
+            whose 2D projections accidentally overlap). Parallel normals confirms the
+            shared face is coplanar — elements meeting at a fold angle are rejected.
+            """
+            key = (min(guid_a, guid_b), max(guid_a, guid_b))
+            if key in adjacency_cache:
+                return adjacency_cache[key]
+            obj_a = get_obj(guid_a)
+            obj_b = get_obj(guid_b)
+            if obj_a is None or obj_b is None or obj_a.type != "MESH" or obj_b.type != "MESH":
+                adjacency_cache[key] = True
+                return True
+            # Quick AABB guard
+            corners_a = [obj_a.matrix_world @ Vector(c) for c in obj_a.bound_box]
+            corners_b = [obj_b.matrix_world @ Vector(c) for c in obj_b.bound_box]
+            for axis in range(3):
+                min_a = min(c[axis] for c in corners_a)
+                max_a = max(c[axis] for c in corners_a)
+                min_b = min(c[axis] for c in corners_b)
+                max_b = max(c[axis] for c in corners_b)
+                if min_a > max_b + tol:
+                    adjacency_cache[key] = False
+                    return False
+                if min_b > max_a + tol:
+                    adjacency_cache[key] = False
+                    return False
+            # Proximity check: vertex-to-vertex OR vertex-to-edge.
+            # Vertex-to-vertex handles adjacent elements sharing a corner.
+            # Vertex-to-edge handles containment (inner element's corners lie
+            # on edges of outer element, never at its corner vertices).
+            tol_sq = tol * tol
+
+            def point_to_seg_dist_sq(p, a, b):
+                ab = b - a
+                len_sq = ab.length_squared
+                if len_sq < 1e-12:
+                    return (p - a).length_squared
+                t = max(0.0, min(1.0, (p - a).dot(ab) / len_sq))
+                return (p - (a + t * ab)).length_squared
+
+            def vertex_near_edges(verts, obj, tol_sq):
+                mat = obj.matrix_world
+                for v in verts:
+                    for edge in obj.data.edges:
+                        v0 = mat @ obj.data.vertices[edge.vertices[0]].co
+                        v1 = mat @ obj.data.vertices[edge.vertices[1]].co
+                        if point_to_seg_dist_sq(v, v0, v1) < tol_sq:
+                            return True
+                return False
+
+            verts_a = [obj_a.matrix_world @ v.co for v in obj_a.data.vertices]
+            verts_b = [obj_b.matrix_world @ v.co for v in obj_b.data.vertices]
+            # Fast vertex-vertex check first
+            has_shared = any((va - vb).length_squared < tol_sq for va in verts_a for vb in verts_b)
+            if not has_shared:
+                # Slower vertex-on-edge check for containment cases
+                has_shared = vertex_near_edges(verts_b, obj_a, tol_sq) or vertex_near_edges(verts_a, obj_b, tol_sq)
+            if not has_shared:
+                adjacency_cache[key] = False
+                return False
+            # Containment check: if one AABB fully contains the other, the
+            # dominant-normal test is unreliable (a flat inner element's largest
+            # face is its top/bottom, not its side face). Skip normal check.
+            def aabb_contains(outer, inner):
+                for axis in range(3):
+                    if min(c[axis] for c in inner) < min(c[axis] for c in outer) - tol:
+                        return False
+                    if max(c[axis] for c in inner) > max(c[axis] for c in outer) + tol:
+                        return False
+                return True
+
+            if aabb_contains(corners_a, corners_b):
+                adjacency_cache[key] = "contained_b"
+                return "contained_b"
+            if aabb_contains(corners_b, corners_a):
+                adjacency_cache[key] = "contained_a"
+                return "contained_a"
+            # Coplanarity check: use the largest-face normal for each object.
+            # Area-weighted averages fail for slabs because top/bottom faces cancel.
+            def dominant_world_normal(obj):
+                mat3 = obj.matrix_world.to_3x3().normalized()
+                best = max(obj.data.polygons, key=lambda p: p.area, default=None)
+                if best is None or best.area < 1e-10:
+                    return None
+                return (mat3 @ best.normal).normalized()
+
+            n_a = dominant_world_normal(obj_a)
+            n_b = dominant_world_normal(obj_b)
+            if n_a is None or n_b is None:
+                adjacency_cache[key] = True
+                return True
+            dot = abs(n_a.dot(n_b))
+            if dot <= 1.0 - 3.8e-5:  # ~0.5° tolerance
+                adjacency_cache[key] = False
+                return False
+            # Face-plane check: parallel normals don't guarantee the elements are
+            # on the same plane — they could be offset (e.g. two walls facing the
+            # same direction at different Y positions meeting at a corner).
+            # Project all vertices of both elements onto n_a (using n_a for both
+            # so that anti-parallel normals +Y/-Y produce matching values).
+            #
+            plane_pos_a = {round(v.dot(n_a), 5) for v in verts_a}
+            plane_pos_b = {round(v.dot(n_a), 5) for v in verts_b}
+            same_plane = any(abs(pa - pb) < tol for pa in plane_pos_a for pb in plane_pos_b)
+            if not same_plane:
+                adjacency_cache[key] = False
+                return False
+            # Depth check: confirm both elements span the same camera depth range.
+            # Catches elements at the same X-Y face plane but different Z heights
+            # (e.g. same wall type on two different floor levels).
+            projs_a = [v.dot(_cam_look) for v in verts_a]
+            projs_b = [v.dot(_cam_look) for v in verts_b]
+            range_a = (min(projs_a), max(projs_a))
+            range_b = (min(projs_b), max(projs_b))
+            overlap = min(range_a[1], range_b[1]) - max(range_a[0], range_b[0])
+            same_depth = overlap > tol
+            if not same_depth:
+                adjacency_cache[key] = False
+                return False
+            # Distinguish elements on the exact same surface (identical layer plane
+            # positions) from elements on adjacent parallel surfaces (sharing only
+            # one plane position at their interface).  Same-surface pairs may have
+            # offset SVG segments that are still a genuine shared interface;
+            # adjacent-surface pairs need the ivs_equal guard to avoid removing
+            # boundary lines between offset walls meeting at a corner.
+            coplanar_result = "same_surface" if plane_pos_a == plane_pos_b else True
+            adjacency_cache[key] = coplanar_result
+            return coplanar_result
+
+        def parse_line(d):
+            # Format is "Mx0,y0 Lx1,y1" (no space after M/L)
+            parts = d.strip().split()
+            if len(parts) == 2 and parts[0].startswith("M") and parts[1].startswith("L"):
+                try:
+                    x0, y0 = map(float, parts[0][1:].split(","))
+                    x1, y1 = map(float, parts[1][1:].split(","))
+                    return (x0, y0), (x1, y1)
+                except ValueError:
+                    pass
+            return None
+
+        def segs_bbox(segs):
+            """Compute AABB (min_x, max_x, min_y, max_y) from a parsed segment list."""
+            if not segs:
+                return None
+            xs = [c for _, (p0, p1) in segs for c in (p0[0], p1[0])]
+            ys = [c for _, (p0, p1) in segs for c in (p0[1], p1[1])]
+            return (min(xs), max(xs), min(ys), max(ys))
+
+        def seg_on_boundary_of(seg, bbox_self, bbox_other):
+            """True if seg (from 'other' element) lies on the shared interface with 'self'.
+
+            A segment from 'other' is on the shared interface when it lies on 'other's
+            OWN bbox edge AND 'self' extends past that edge on the adjacent side.
+
+            This handles both simple abutment (elements side-by-side, bbox edges touching)
+            and notch/wrap cases (one L-shaped element wraps around a smaller one, so the
+            shared face is interior to the larger element's bbox).
+
+            External edges shared by both elements (e.g. both having the same min_y) are
+            correctly rejected: 'self' would have to extend PAST the edge, not merely
+            reach the same boundary.
+            """
+            (x0, y0), (x1, y1) = seg
+            min_xs, max_xs, min_ys, max_ys = bbox_self
+            min_xo, max_xo, min_yo, max_yo = bbox_other
+            is_v = abs(x0 - x1) < TOL
+            is_h = abs(y0 - y1) < TOL
+            if is_v:
+                x_mid = (x0 + x1) / 2
+                # Seg on other's RIGHT edge; self must extend further right
+                if abs(x_mid - max_xo) < TOL and max_xs > max_xo + TOL and min_xs < max_xo + TOL:
+                    y_lo, y_hi = min(y0, y1), max(y0, y1)
+                    return min(y_hi, max_ys) - max(y_lo, min_ys) > TOL
+                # Seg on other's LEFT edge; self must extend further left
+                if abs(x_mid - min_xo) < TOL and min_xs < min_xo - TOL and max_xs > min_xo - TOL:
+                    y_lo, y_hi = min(y0, y1), max(y0, y1)
+                    return min(y_hi, max_ys) - max(y_lo, min_ys) > TOL
+            if is_h:
+                y_mid = (y0 + y1) / 2
+                # Seg on other's BOTTOM edge; self must extend further down
+                if abs(y_mid - max_yo) < TOL and max_ys > max_yo + TOL and min_ys < max_yo + TOL:
+                    x_lo, x_hi = min(x0, x1), max(x0, x1)
+                    return min(x_hi, max_xs) - max(x_lo, min_xs) > TOL
+                # Seg on other's TOP edge; self must extend further up
+                if abs(y_mid - min_yo) < TOL and min_ys < min_yo - TOL and max_ys > min_yo - TOL:
+                    x_lo, x_hi = min(x0, x1), max(x0, x1)
+                    return min(x_hi, max_xs) - max(x_lo, min_xs) > TOL
+            return False
+
+        def seg_line_key(seg):
+            """Return a bucketed key for the axis-aligned line containing seg.
+
+            Returns ('h', int_key) for horizontal or ('v', int_key) for vertical.
+            int_key is round(coord / TOL) so segments within TOL of the same
+            line map to the same bucket. Returns None for diagonal segments.
+            """
+            (x0, y0), (x1, y1) = seg
+            if abs(y0 - y1) < TOL:
+                return ("h", round((y0 + y1) / 2 / TOL))
+            if abs(x0 - x1) < TOL:
+                return ("v", round((x0 + x1) / 2 / TOL))
+            return None
+
+        def seg_interval(seg):
+            """Return the (lo, hi) 1-D interval of an axis-aligned segment."""
+            (x0, y0), (x1, y1) = seg
+            if abs(y0 - y1) < TOL:
+                return (min(x0, x1), max(x0, x1))
+            return (min(y0, y1), max(y0, y1))
+
+        def seg_axis_coord(seg, kind):
+            """Return the fixed coordinate (y for 'h', x for 'v') of a segment."""
+            (x0, y0), (x1, y1) = seg
+            return (y0 + y1) / 2 if kind == "h" else (x0 + x1) / 2
+
+        def ivs_union(ivs):
+            """Merge a list of (lo, hi) intervals into a non-overlapping sorted list."""
+            merged = []
+            for lo, hi in sorted(ivs):
+                if merged and lo <= merged[-1][1] + TOL:
+                    merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+                else:
+                    merged.append([lo, hi])
+            return [(lo, hi) for lo, hi in merged]
+
+        def ivs_intersect(a_ivs, b_ivs):
+            """Return the intersection of two sets of intervals."""
+            result = []
+            for a_lo, a_hi in a_ivs:
+                for b_lo, b_hi in b_ivs:
+                    lo, hi = max(a_lo, b_lo), min(a_hi, b_hi)
+                    if hi > lo + TOL:
+                        result.append((lo, hi))
+            return result
+
+        def ivs_subtract(ivs, sub):
+            """Subtract interval list sub from interval list ivs."""
+            result = list(ivs)
+            for s_lo, s_hi in sub:
+                new_result = []
+                for r_lo, r_hi in result:
+                    if s_hi <= r_lo + TOL or s_lo >= r_hi - TOL:
+                        new_result.append((r_lo, r_hi))
+                    else:
+                        if r_lo < s_lo - TOL:
+                            new_result.append((r_lo, s_lo))
+                        if r_hi > s_hi + TOL:
+                            new_result.append((s_hi, r_hi))
+                result = new_result
+            return result
+
+        def make_seg(kind, coord, lo, hi):
+            """Reconstruct a segment tuple from a line kind, fixed coord, and interval."""
+            if kind == "h":
+                return ((lo, coord), (hi, coord))
+            return ((coord, lo), (coord, hi))
+
+        def ivs_equal(a, b):
+            """True if two interval lists are equal within TOL."""
+            if len(a) != len(b):
+                return False
+            return all(
+                abs(a_lo - b_lo) <= TOL and abs(a_hi - b_hi) <= TOL
+                for (a_lo, a_hi), (b_lo, b_hi) in zip(a, b)
+            )
+
+        # Group projection <g> elements by their immediate parent
+        parent_to_groups = {}
+        for g in root.iter(f"{{{SVG}}}g"):
+            cls_list = g.get("class", "").split()
+            if "projection" not in cls_list:
+                continue
+            parent = g.getparent()
+            if parent is None:
+                continue
+            parent_to_groups.setdefault(id(parent), []).append(g)
+
+        for pid, proj_groups in parent_to_groups.items():
+            if len(proj_groups) < 2:
+                continue
+
+            def get_material_key(guid):
+                """Return an ordered tuple of material IDs for comparison.
+
+                For elements with IfcMaterialLayerSetUsage (walls, slabs), use
+                the ordered layer material IDs — this ignores extra materials
+                assigned via surface styles or other mechanisms that don't affect
+                the visible cross-section. The tuple is normalised so that
+                reversed layer sequences (same assembly, opposite orientation)
+                compare equal.
+
+                Falls back to a sorted tuple of all material IDs for elements
+                that don't use a layer set.
+                """
+                element = self.get_element_by_guid(guid)
+                if element is None:
+                    return None
+                material = ifcopenshell.util.element.get_material(element)
+                if material is not None:
+                    layer_set = None
+                    if material.is_a("IfcMaterialLayerSetUsage"):
+                        layer_set = material.ForLayerSet
+                    elif material.is_a("IfcMaterialLayerSet"):
+                        layer_set = material
+                    if layer_set is not None:
+                        return tuple(
+                            layer.Material.id()
+                            for layer in layer_set.MaterialLayers
+                            if layer.Material is not None
+                        )
+                mats = ifcopenshell.util.element.get_materials(element)
+                return tuple(sorted(m.id() for m in mats)) if mats else ()
+
+            # Camera look direction (unit vector pointing from camera into scene)
+            _cam_look = -self.camera.matrix_world.col[2].to_3d().normalized()
+
+            def get_camera_face_layer_id(guid):
+                """Return the material ID of the layer the camera sees for this element.
+
+                For IfcMaterialLayerSetUsage elements the camera-facing layer depends
+                on the LayerSetDirection and which side of the element the camera is on:
+
+                  AXIS3 (slabs/roofs — vertical stacking):
+                    Plan view (camera looks down) → top layer visible.
+                    RCP (camera looks up) → bottom layer visible.
+
+                  AXIS1/AXIS2 (walls — horizontal stacking):
+                    The dominant face normal is computed for the element. If the camera
+                    look direction is opposite to the face normal the camera sees the
+                    face-normal side (the "positive" face). Otherwise it sees the
+                    "negative" face (the interior side of the layer sequence).
+
+                DirectionSense POSITIVE: Layer[0] is the negative/interior face,
+                Layer[-1] is the positive/exterior face. NEGATIVE reverses this.
+                """
+                element = self.get_element_by_guid(guid)
+                if element is None:
+                    return None
+                material = ifcopenshell.util.element.get_material(element)
+                if material is None or not material.is_a("IfcMaterialLayerSetUsage"):
+                    return None
+                layer_set = material.ForLayerSet
+                if layer_set is None:
+                    return None
+                layers = [l for l in layer_set.MaterialLayers if l.Material is not None]
+                if not layers:
+                    return None
+                positive = material.DirectionSense == "POSITIVE"
+                layer_dir = material.LayerSetDirection
+
+                # For all LayerSetDirections, determine which side of the element
+                # the camera is on by projecting the camera look vector onto the
+                # object's local stacking axis in world space:
+                #   AXIS3 → stacking along local Z (col[2]) — slabs/roofs
+                #   AXIS2 → stacking along local Y (col[1]) — most walls
+                #   AXIS1 → stacking along local X (col[0]) — rare walls
+                # DirectionSense POSITIVE: Layer[-1] is on the +axis side.
+                # dot < 0 → camera look is opposite to stacking axis
+                #         → camera is on the +axis (positive/exterior) side.
+                # This correctly handles sloped slabs seen by two plan-view
+                # cameras from opposite sides, unlike the simpler camera_looks_up
+                # flag which cannot distinguish them.
+                col_idx = {"AXIS1": 0, "AXIS2": 1, "AXIS3": 2}.get(layer_dir)
+                if col_idx is not None:
+                    obj = get_obj(guid)
+                    if obj is None or obj.type != "MESH":
+                        return None
+                    stack_axis = obj.matrix_world.col[col_idx].to_3d().normalized()
+                    dot = _cam_look.dot(stack_axis)
+                    on_positive_side = dot < 0
+                    face_layer = (layers[-1] if positive else layers[0]) if on_positive_side else (layers[0] if positive else layers[-1])
+                    return face_layer.Material.id()
+
+                return None
+
+            def mat_keys_match(a, b, face_a=None, face_b=None):
+                """True if two ordered layer-material tuples represent compatible assemblies.
+
+                Compatible means the visible cross-section at the shared face is
+                the same material.  Checks in order:
+
+                  - Exact match (identical layer sequences).
+                  - Reversed match (same assembly in opposite orientation).
+                  - Suffix match: one sequence ends with all layers of the other.
+                  - Prefix match: one sequence starts with all layers of the other.
+                  - Camera-face match: when the camera-facing layer ID is known for
+                    both elements (AXIS3 slabs/roofs), only those layers are compared
+                    so that a plan view and an RCP of the same elements can produce
+                    different join decisions. This is the final check for AXIS3 elements.
+
+                For AXIS1/AXIS2 walls the full cross-section is always visible in plan,
+                so only exact/reversed/prefix/suffix matches are accepted — sharing only
+                an interior or exterior layer is not sufficient.
+                """
+                if a == b or a == b[::-1]:
+                    return True
+                short, long_ = (a, b) if len(a) <= len(b) else (b, a)
+                n = len(short)
+                if long_[-n:] == short or long_[:n] == short:
+                    return True
+                # Camera-directional boundary check for AXIS3 elements (slabs/roofs).
+                # Only reached when exact/prefix/suffix checks failed.
+                if face_a is not None and face_b is not None:
+                    return face_a == face_b
+                return False
+
+            def get_style_key(guid):
+                """IDs of IfcPresentationStyles directly on the element's geometry items."""
+                element = self.get_element_by_guid(guid)
+                if element is None or not getattr(element, "Representation", None):
+                    return ()
+                style_ids = set()
+                for rep in element.Representation.Representations:
+                    for item in rep.Items:
+                        for si in getattr(item, "StyledByItem", ()):
+                            for style in si.Styles:
+                                style_ids.add(style.id())
+                return tuple(sorted(style_ids))
+
+            group_data = []
+            for grp in proj_groups:
+                guid = grp.get("{http://www.ifcopenshell.org/ns}guid", "")
+                cls = grp.get("class", "")
+                mat_key = get_material_key(guid)
+                face_mat_id = get_camera_face_layer_id(guid)
+                style_key = get_style_key(guid)
+                segs = []
+                all_paths = grp.findall(f"{{{SVG}}}path")
+                for path_el in all_paths:
+                    line = parse_line(path_el.get("d", ""))
+                    if line is not None:
+                        segs.append((path_el, line))
+                group_data.append((grp, mat_key, face_mat_id, style_key, segs, guid))
+
+            to_remove = set()
+            # New path segments to add back: list of (grp_element, seg) pairs
+            to_add = []
+
+            for i, (grp_i, mat_i, face_i, style_i, segs_i, guid_i) in enumerate(group_data):
+                if mat_i is None:
+                    continue
+                for j, (grp_j, mat_j, face_j, style_j, segs_j, guid_j) in enumerate(group_data):
+                    if j <= i:
+                        continue
+                    if not mat_keys_match(mat_i, mat_j, face_i, face_j):
+                        continue
+                    if style_j != style_i:
+                        continue
+                    _copl_result = are_coplanar_and_adjacent(guid_i, guid_j)
+                    if not _copl_result:
+                        continue
+                    matched = 0
+
+                    _is_contained = _copl_result in ("contained_a", "contained_b")
+                    _is_same_surface = (_copl_result == "same_surface")
+
+                    # Group each element's segments by axis-aligned line.
+                    # All segments on the same line (within TOL) are merged into a
+                    # single interval union before computing the shared portion.
+                    # This correctly handles cases where one element has a single
+                    # long edge while the other has multiple shorter segments on
+                    # the same line (e.g. an L-shaped element).
+                    def group_by_line(segs):
+                        d = {}
+                        for path_el, seg in segs:
+                            key = seg_line_key(seg)
+                            if key is None:
+                                continue
+                            if key not in d:
+                                d[key] = {"paths": [], "ivs": [], "coord": seg_axis_coord(seg, key[0])}
+                            d[key]["paths"].append(path_el)
+                            d[key]["ivs"].append(seg_interval(seg))
+                        return d
+
+                    lines_i = group_by_line(segs_i)
+                    lines_j = group_by_line(segs_j)
+
+                    # Track whether bilateral found shared keys but skipped them
+                    # due to offset overlap.  If so, both elements have explicit
+                    # segments at the shared line — the unilateral fallback must
+                    # not run for this pair (it would remove the same boundary
+                    # segments that bilateral correctly rejected).
+                    _bilateral_had_explicit_keys = False
+                    for key in set(lines_i) & set(lines_j):
+                        entry_i = lines_i[key]
+                        entry_j = lines_j[key]
+                        union_i = ivs_union(entry_i["ivs"])
+                        union_j = ivs_union(entry_j["ivs"])
+                        shared = ivs_intersect(union_i, union_j)
+                        if not shared:
+                            continue
+                        _bilateral_had_explicit_keys = True
+                        # For contained pairs the ivs_equal full-extent guard is
+                        # skipped: a partial overlap between an outer element's long
+                        # edge and a physically-contained inner element's short edge
+                        # is still a genuine shared interface, not an offset-wall case.
+                        if not _is_contained and not _is_same_surface and not (ivs_equal(shared, union_i) or ivs_equal(shared, union_j)):
+                            continue
+                        matched += len(shared)
+                        kind = key[0]
+                        coord = entry_i["coord"]
+                        for path_el in entry_i["paths"]:
+                            to_remove.add(id(path_el))
+                        for path_el in entry_j["paths"]:
+                            to_remove.add(id(path_el))
+                        rem_i = ivs_subtract(union_i, shared)
+                        rem_j = ivs_subtract(union_j, shared)
+                        for lo, hi in rem_i:
+                            to_add.append((grp_i, make_seg(kind, coord, lo, hi)))
+                        for lo, hi in rem_j:
+                            to_add.append((grp_j, make_seg(kind, coord, lo, hi)))
+
+                    # Unilateral fallback: when one element's shared edge is implicit
+                    # (not explicitly drawn as a path segment), segments from the other
+                    # element that lie on the boundary of that element's SVG bbox are
+                    # still on the shared face and should be removed.
+                    # Not applicable to contained pairs (bilateral handles their
+                    # shared interface; unilateral would over-remove here).
+                    if not _is_contained and matched == 0 and not _bilateral_had_explicit_keys and segs_i and segs_j:
+                        bbox_i = segs_bbox(segs_i)
+                        bbox_j = segs_bbox(segs_j)
+                        if bbox_i and bbox_j:
+                            for path_j, line_j in segs_j:
+                                if seg_on_boundary_of(line_j, bbox_i, bbox_j):
+                                    to_remove.add(id(path_j))
+                                    matched += 1
+                            for path_i, line_i in segs_i:
+                                if seg_on_boundary_of(line_i, bbox_j, bbox_i):
+                                    to_remove.add(id(path_i))
+                                    matched += 1
+
+            if to_remove:
+                for grp, mat, face, style, segs, guid in group_data:
+                    for path_el, _ in segs:
+                        if id(path_el) in to_remove:
+                            grp.remove(path_el)
+
+            for grp_el, seg in to_add:
+                path_el = etree.SubElement(grp_el, f"{{{SVG}}}path")
+                (x0, y0), (x1, y1) = seg
+                path_el.set("d", f"M{x0},{y0} L{x1},{y1}")
 
     def drawing_to_model_co(self, x: float, y: float) -> Vector:
         camera_xy = np.array((x, -y)) / self.scale / 1000
