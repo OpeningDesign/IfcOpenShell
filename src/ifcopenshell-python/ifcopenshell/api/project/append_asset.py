@@ -30,6 +30,7 @@ import ifcopenshell.ifcopenshell_wrapper as W
 import ifcopenshell.util.element
 import ifcopenshell.util.geolocation
 import ifcopenshell.util.placement
+import ifcopenshell.util.schema
 import ifcopenshell.util.unit
 
 APPENDABLE_ASSET = Literal[
@@ -133,6 +134,13 @@ def append_asset(
             )
 
     """
+    # The library and the project may use different schemas (e.g. appending from
+    # a default IFC4 library into an IFC4X3 project, or between IFC4X3
+    # sub-versions). Entities cannot be added across schemas, so migrate the
+    # library to the project schema first. See issue #4766.
+    if library.schema_identifier != file.schema_identifier:
+        library, element = migrate_library_to_schema(file, library, element)
+
     usecase = Usecase()
     usecase.file: ifcopenshell.file = file
     usecase.settings = {
@@ -142,6 +150,59 @@ def append_asset(
         "assume_asset_uniqueness_by_name": assume_asset_uniqueness_by_name,
     }
     return usecase.execute()
+
+
+def migrate_library_to_schema(
+    file: ifcopenshell.file,
+    library: ifcopenshell.file,
+    element: ifcopenshell.entity_instance,
+) -> tuple[ifcopenshell.file, ifcopenshell.entity_instance]:
+    """Migrate a library to the project's schema so its assets can be appended.
+
+    Returns an in-memory copy of the library in the project's schema and the
+    equivalent of ``element`` inside it. The original ``library`` is never
+    mutated. The whole library is migrated (not just ``element``) so that
+    assets linked to it through inverse relationships (materials, property
+    sets, styles) remain available to the append traversal.
+
+    :raises RuntimeError: If ``element`` cannot be migrated to the project
+        schema (e.g. it has no equivalent class in the target schema).
+    """
+    # Work on a copy so the caller's library (which may be shared and reused)
+    # is never mutated by the migrator's preprocessing step.
+    library_copy = ifcopenshell.file.from_string(library.wrapped_data.to_string())
+    element_id = element.id()
+    migrated_library = ifcopenshell.file(schema=file.schema_identifier)
+    migrator = ifcopenshell.util.schema.Migrator()
+    migrator.preprocess(library_copy, migrated_library)
+
+    target = library_copy.by_id(element_id)
+    try:
+        migrator.migrate(target, migrated_library)
+    except Exception as e:
+        raise RuntimeError(
+            f"Cannot append asset: failed to migrate #{element_id}={element.is_a()} "
+            f"from schema {library.schema_identifier} to {file.schema_identifier}. "
+            f"The schemas may be incompatible for this element. Original error: {e}"
+        ) from e
+
+    # Migrate the rest of the library so inverse-linked assets are also
+    # available. Individual entities without an equivalent in the target schema
+    # (e.g. schema-specific geometry carriers) are skipped; the appended asset
+    # itself was already migrated successfully above.
+    for library_element in library_copy:
+        try:
+            migrator.migrate(library_element, migrated_library)
+        except Exception:
+            pass
+
+    migrated_id = migrator.migrated_ids.get(element_id)
+    if migrated_id is None:
+        raise RuntimeError(
+            f"Cannot append asset: #{element_id}={element.is_a()} has no equivalent "
+            f"in schema {file.schema_identifier}."
+        )
+    return migrated_library, migrated_library.by_id(migrated_id)
 
 
 class SafeRemovalContext:
