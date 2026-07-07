@@ -867,3 +867,48 @@ class TestAppendAssetIFC4(test.bootstrap.IFC4, TestAppendAssetIFC2X3):
         ifcopenshell.api.material.add_material_set(self.file, set_type="IfcMaterialProfileSet", name="TestProfileSet")
         ifcopenshell.api.project.append_asset(self.file, library, column_type, assume_asset_uniqueness_by_name=False)
         assert len(self.file.by_type("IfcMaterialProfileSet")) == 2
+
+
+class TestAppendAssetCrossSchema(test.bootstrap.IFC4X3):
+    # Regression tests for issue #4766: appending a library element whose schema
+    # differs from the project's schema must migrate the asset instead of
+    # raising "Unable to add instance from <schema> to file with <schema>".
+    def test_append_type_product_from_ifc4_library_into_ifc4x3_project(self):
+        library = ifcopenshell.api.project.create_file(version="IFC4")
+        wall_type = ifcopenshell.api.root.create_entity(library, ifc_class="IfcWallType", name="WAL01")
+        material = ifcopenshell.api.material.add_material(library, name="Concrete", category="concrete")
+        rel = ifcopenshell.api.material.assign_material(
+            library, products=[wall_type], type="IfcMaterialLayerSet"
+        )
+        layer = ifcopenshell.api.material.add_layer(library, layer_set=rel.RelatingMaterial, material=material)
+        layer.LayerThickness = 200
+        pset = ifcopenshell.api.pset.add_pset(library, product=wall_type, name="Pset_WallCommon")
+        ifcopenshell.api.pset.edit_pset(library, pset=pset, properties={"FireRating": "REI60"})
+
+        new = ifcopenshell.api.project.append_asset(self.file, library=library, element=wall_type)
+
+        assert self.file.schema == "IFC4X3"
+        assert new.is_a("IfcWallType")
+        assert new.file == self.file
+        # Inverse-linked material and forward-linked pset survive migration.
+        appended_material = ifcopenshell.util.element.get_material(new)
+        assert appended_material.is_a("IfcMaterialLayerSet")
+        assert appended_material.MaterialLayers[0].Material.Name == "Concrete"
+        assert appended_material.MaterialLayers[0].LayerThickness == 200
+        assert ifcopenshell.util.element.get_psets(new)["Pset_WallCommon"]["FireRating"] == "REI60"
+
+    def test_append_material_from_ifc4_library_into_ifc4x3_project(self):
+        library = ifcopenshell.api.project.create_file(version="IFC4")
+        material = ifcopenshell.api.material.add_material(library, name="Concrete", category="concrete")
+        new = ifcopenshell.api.project.append_asset(self.file, library=library, element=material)
+        assert new.is_a("IfcMaterial")
+        assert new.Name == "Concrete"
+        assert len(self.file.by_type("IfcMaterial")) == 1
+
+    def test_same_schema_library_is_not_migrated(self):
+        # A same-schema append must behave exactly as before (no migration copy).
+        library = ifcopenshell.api.project.create_file(version="IFC4X3")
+        wall_type = ifcopenshell.api.root.create_entity(library, ifc_class="IfcWallType", name="WAL01")
+        new = ifcopenshell.api.project.append_asset(self.file, library=library, element=wall_type)
+        assert new.is_a("IfcWallType")
+        assert new.GlobalId == wall_type.GlobalId
