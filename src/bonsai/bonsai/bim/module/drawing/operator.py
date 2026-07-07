@@ -2551,6 +2551,10 @@ class UpdateSectionEndpoints(bpy.types.Operator, tool.Ifc.Operator):
         tool.Drawing.update_section_endpoints(obj, camera)
 
 
+# AddElevationAnnotation is defined after SetDimensionAnchor (below) because it
+# inherits from it.  This placeholder keeps the module namespace tidy.
+
+
 class AddSheet(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.add_sheet"
     bl_label = "Add Sheet"
@@ -6410,17 +6414,56 @@ class DrawParametricDimension(bpy.types.Operator, PolylineOperator, tool.Ifc.Ope
     # IFC-native snap for LAYER / VERTEX / EDGE modes
 
     @staticmethod
-    def _snap_on_coplanar_faces(obj, hit_pt_world, tol_z=1e-3):
-        """Return FACE snap candidates for vertical mesh faces with an edge at hit_pt_world's Z.
+    def _get_mesh_snap_candidates(obj, snap_mode):
+        """Derive VERTEX or EDGE snap candidates directly from the Blender mesh.
 
-        Finds faces that are edge-on to the camera (perpendicular to the floor plane) and
-        whose bottom edge is coplanar with the hovered floor surface, then projects the
-        hit point onto each such face's plane to get the snap position.
+        Fallback for tessellated IFC elements (IfcFacetedBrep, IfcTessellatedFaceSet,
+        etc.) that have no IfcExtrudedAreaSolid, causing get_profile_snap_candidates
+        to return [].  Each candidate carries ``local_m`` (element-local coordinates
+        in metres) so _build_ifc_anchor can create a LOCAL_POINT anchor that follows
+        the element through moves and rotations.
+        """
+        mx = obj.matrix_world
+        mesh = obj.data
+        candidates = []
+        if snap_mode == "VERTEX":
+            for vert in mesh.vertices:
+                wp = mx @ vert.co
+                candidates.append({
+                    "type": "VERTEX", "snap": "VERTEX",
+                    "snap_world": (wp.x, wp.y, wp.z),
+                    "local_m": (vert.co.x, vert.co.y, vert.co.z),
+                })
+        elif snap_mode == "EDGE":
+            for edge in mesh.edges:
+                v0c = mesh.vertices[edge.vertices[0]].co
+                v1c = mesh.vertices[edge.vertices[1]].co
+                v0 = mx @ v0c
+                v1 = mx @ v1c
+                mid_w = ((v0.x + v1.x) * 0.5, (v0.y + v1.y) * 0.5, (v0.z + v1.z) * 0.5)
+                mid_l = ((v0c.x + v1c.x) * 0.5, (v0c.y + v1c.y) * 0.5, (v0c.z + v1c.z) * 0.5)
+                candidates.append({
+                    "type": "EDGE", "snap": "EDGE",
+                    "snap_world": mid_w,
+                    "local_m": mid_l,
+                    "v0": (v0.x, v0.y, v0.z),
+                    "v1": (v1.x, v1.y, v1.z),
+                })
+        return candidates
+
+    @staticmethod
+    def _snap_on_coplanar_faces(obj, hit_pt_world, tol_z=1e-3):
+        """Return FACE snap candidates by projecting hit_pt onto each vertical face plane.
+
+        Accepts any face with a near-horizontal normal (wall-like faces) regardless of
+        the face's Z elevation.  The screen-space bbox filter on the caller side and the
+        final per-candidate screen-distance gate already prevent false positives, so no
+        Z-based filtering is needed here.  (Z is also irrelevant for 2D annotation
+        projections.)
         """
         from mathutils import Vector
         mx = obj.matrix_world
         mesh = obj.data
-        target_z = float(hit_pt_world.z)
         hit_pt = Vector(hit_pt_world)
         candidates = []
         for poly in mesh.polygons:
@@ -6429,12 +6472,6 @@ class DrawParametricDimension(bpy.types.Operator, PolylineOperator, tool.Ifc.Ope
                 continue
             verts_w = [mx @ mesh.vertices[vi].co for vi in poly.vertices]
             n = len(verts_w)
-            has_coplanar_edge = any(
-                abs(verts_w[i].z - target_z) <= tol_z and abs(verts_w[(i + 1) % n].z - target_z) <= tol_z
-                for i in range(n)
-            )
-            if not has_coplanar_edge:
-                continue
             face_center_w = sum(verts_w, Vector((0.0, 0.0, 0.0))) / n
             dist = (hit_pt - face_center_w).dot(normal_w)
             snapped_pt = hit_pt - normal_w * dist
@@ -6443,12 +6480,19 @@ class DrawParametricDimension(bpy.types.Operator, PolylineOperator, tool.Ifc.Ope
                 "snap_world": (snapped_pt.x, snapped_pt.y, snapped_pt.z),
                 "snap": "FACE",
                 "face_verts": [tuple(v) for v in verts_w],
+                "face_normal_world": (normal_w.x, normal_w.y, normal_w.z),
             })
         return candidates
 
     @staticmethod
-    def _pt_in_obj_bbox(obj, pt_world, tol=1e-3):
-        """Return True if pt_world is inside obj's world-space bounding box."""
+    def _pt_in_obj_bbox(obj, pt_world, tol=1e-3, tol_z=None):
+        """Return True if pt_world is inside obj's world-space bounding box.
+
+        tol_z overrides tol for the Z axis — pass a large value to skip Z
+        checking when Z is already constrained by the caller (e.g. FACE mode).
+        """
+        if tol_z is None:
+            tol_z = tol
         try:
             local_pt = obj.matrix_world.inverted() @ pt_world
         except Exception:
@@ -6460,7 +6504,7 @@ class DrawParametricDimension(bpy.types.Operator, PolylineOperator, tool.Ifc.Ope
         return (
             min(xs) - tol <= local_pt.x <= max(xs) + tol
             and min(ys) - tol <= local_pt.y <= max(ys) + tol
-            and min(zs) - tol <= local_pt.z <= max(zs) + tol
+            and min(zs) - tol_z <= local_pt.z <= max(zs) + tol_z
         )
 
     def _compute_ifc_snap_candidate(self, context, event) -> "Optional[dict]":
@@ -6489,7 +6533,14 @@ class DrawParametricDimension(bpy.types.Operator, PolylineOperator, tool.Ifc.Ope
         if self._snap_mode == "FACE":
             if hit_pt is None or not self.objs_2d_bbox:
                 return None
-            nearby_cands = []
+            nearby_cands = []  # (cand, elem, obj, max_screen_tol)
+            # Check hit_obj itself first: handles the case where the cursor
+            # lands exactly on the wall/edge boundary (hit_obj IS the wall).
+            if hit_obj and hit_obj.data and isinstance(hit_obj.data, bpy.types.Mesh):
+                hit_elem = tool.Ifc.get_entity(hit_obj)
+                if hit_elem and hasattr(hit_elem, "GlobalId"):
+                    for c in self._snap_on_coplanar_faces(hit_obj, hit_pt):
+                        nearby_cands.append((c, hit_elem, hit_obj, 30))
             extra_count = 0
             for obj, _bbox2d in self.objs_2d_bbox:
                 if extra_count >= 4:
@@ -6501,21 +6552,23 @@ class DrawParametricDimension(bpy.types.Operator, PolylineOperator, tool.Ifc.Ope
                 extra_elem = tool.Ifc.get_entity(obj)
                 if not extra_elem or not hasattr(extra_elem, "GlobalId"):
                     continue
-                in_bbox = self._pt_in_obj_bbox(obj, hit_pt)
-                if not in_bbox:
+                sx0, sx1, sy0, sy1 = _bbox2d
+                _SCREEN_TOL = max(30, 100 - min(sx1 - sx0, sy1 - sy0))
+                if not (sx0 - _SCREEN_TOL <= mx <= sx1 + _SCREEN_TOL and sy0 - _SCREEN_TOL <= my <= sy1 + _SCREEN_TOL):
                     continue
-                face_cands = self._snap_on_coplanar_faces(obj, hit_pt)
-                nearby_cands.extend((c, extra_elem, obj) for c in face_cands)
+                nearby_cands.extend(
+                    (c, extra_elem, obj, _SCREEN_TOL)
+                    for c in self._snap_on_coplanar_faces(obj, hit_pt)
+                )
                 extra_count += 1
 
-            _FACE_THRESH_D2 = 30 * 30
             best_cand, best_elem, best_obj, best_d2 = None, None, None, float("inf")
-            for cand, elem, obj in nearby_cands:
+            for cand, elem, obj, max_tol in nearby_cands:
                 sp = location_3d_to_region_2d(region, rv3d, Vector(cand["snap_world"]))
                 if sp is None:
                     continue
                 d2 = (sp.x - mx) ** 2 + (sp.y - my) ** 2
-                if d2 < best_d2 and d2 < _FACE_THRESH_D2:
+                if d2 < best_d2 and d2 < max_tol * max_tol:
                     best_d2 = d2
                     best_cand = cand
                     best_elem = elem
@@ -6530,55 +6583,84 @@ class DrawParametricDimension(bpy.types.Operator, PolylineOperator, tool.Ifc.Ope
         # ----------------------------------------------------------------
         # LAYER / VERTEX / EDGE modes
         # ----------------------------------------------------------------
-        if not hit_obj:
-            return None
-        element = tool.Ifc.get_entity(hit_obj)
-        if not element or not hasattr(element, "GlobalId"):
-            return None
+        # Candidates are stored as (cand, elem, obj, max_screen_tol):
+        #   - Direct-hit object → max_screen_tol = inf  (no distance gate)
+        #   - Nearby objects found via screen bbox → max_screen_tol = _SCREEN_TOL
+        # This lets thin edge-on walls (2-7 px wide bbox, ~98 px tolerance) be
+        # included without relaxing the gate for normal objects.
+        file = tool.Ifc.get()
+        all_cands = []  # (cand, elem, obj, max_screen_tol)
 
-        # Recompute expensive candidate geometry only when the hovered object changes.
-        obj_ptr = hit_obj.as_pointer()
-        if obj_ptr != self._snap_cand_obj_ptr:
-            file = tool.Ifc.get()
-            placement_override = {element.id(): np.array(hit_obj.matrix_world)}
-            if self._snap_mode == "LAYER":
-                self._snap_cand_cache = drawing_api.get_layer_snap_candidates(file, element, placement_override)
-            else:
-                self._snap_cand_cache = drawing_api.get_profile_snap_candidates(file, element, placement_override)
-            self._snap_cand_obj_ptr = obj_ptr
+        # Build initial candidates from the directly-hit object (if any).
+        # When hit_obj is None (thin walls are never the raycast target) we skip
+        # this block and rely entirely on the screen-bbox search below.
+        if hit_obj:
+            element = tool.Ifc.get_entity(hit_obj)
+            if element and hasattr(element, "GlobalId"):
+                obj_ptr = hit_obj.as_pointer()
+                if obj_ptr != self._snap_cand_obj_ptr:
+                    placement_override = {element.id(): np.array(hit_obj.matrix_world)}
+                    if self._snap_mode == "LAYER":
+                        self._snap_cand_cache = drawing_api.get_layer_snap_candidates(file, element, placement_override)
+                    else:
+                        self._snap_cand_cache = drawing_api.get_profile_snap_candidates(file, element, placement_override)
+                    self._snap_cand_obj_ptr = obj_ptr
+                all_cands = [(c, element, hit_obj, float("inf")) for c in self._snap_cand_cache]
 
-        if self._snap_mode == "LAYER":
-            all_layer_cands = [(c, element, hit_obj) for c in self._snap_cand_cache]
-            if hit_pt is not None and self.objs_2d_bbox:
-                file = tool.Ifc.get()
-                extra_count = 0
-                for obj, _bbox2d in self.objs_2d_bbox:
-                    if extra_count >= 4:
-                        break
-                    if obj is hit_obj:
-                        continue
-                    if obj.data is None or not isinstance(obj.data, bpy.types.Mesh):
-                        continue
-                    extra_elem = tool.Ifc.get_entity(obj)
-                    if not extra_elem or not hasattr(extra_elem, "GlobalId"):
-                        continue
-                    if not self._pt_in_obj_bbox(obj, hit_pt):
-                        continue
-                    extra_ptr = obj.as_pointer()
-                    if extra_ptr not in self._snap_cand_multi_cache:
-                        placement_override = {extra_elem.id(): np.array(obj.matrix_world)}
+        # Extend with candidates from nearby objects using adaptive screen-bbox.
+        # Replaces the old 30-px hardcoded check (LAYER) and _pt_in_obj_bbox
+        # (VERTEX/EDGE), so thin edge-on walls are reachable in all modes.
+        if self.objs_2d_bbox:
+            extra_count = 0
+            for obj, _bbox2d in self.objs_2d_bbox:
+                if extra_count >= 4:
+                    break
+                if obj is hit_obj:
+                    continue
+                if obj.data is None or not isinstance(obj.data, bpy.types.Mesh):
+                    continue
+                extra_elem = tool.Ifc.get_entity(obj)
+                if not extra_elem or not hasattr(extra_elem, "GlobalId"):
+                    continue
+                sx0, sx1, sy0, sy1 = _bbox2d
+                _bbox_w = sx1 - sx0
+                _bbox_h = sy1 - sy0
+                _SCREEN_TOL = max(30, 100 - min(_bbox_w, _bbox_h))
+                if not (sx0 - _SCREEN_TOL <= mx <= sx1 + _SCREEN_TOL and sy0 - _SCREEN_TOL <= my <= sy1 + _SCREEN_TOL):
+                    continue
+                extra_ptr = obj.as_pointer()
+                if extra_ptr not in self._snap_cand_multi_cache:
+                    placement_override = {extra_elem.id(): np.array(obj.matrix_world)}
+                    if self._snap_mode == "LAYER":
                         self._snap_cand_multi_cache[extra_ptr] = drawing_api.get_layer_snap_candidates(
                             file, extra_elem, placement_override
                         )
-                    all_layer_cands.extend((c, extra_elem, obj) for c in self._snap_cand_multi_cache[extra_ptr])
-                    extra_count += 1
+                    else:
+                        self._snap_cand_multi_cache[extra_ptr] = drawing_api.get_profile_snap_candidates(
+                            file, extra_elem, placement_override
+                        )
+                ifc_cands = self._snap_cand_multi_cache[extra_ptr]
+                if ifc_cands:
+                    all_cands.extend((c, extra_elem, obj, _SCREEN_TOL) for c in ifc_cands)
+                elif self._snap_mode in ("VERTEX", "EDGE"):
+                    # Tessellated element with no IfcExtrudedAreaSolid: fall back to mesh
+                    all_cands.extend(
+                        (c, extra_elem, obj, _SCREEN_TOL)
+                        for c in self._get_mesh_snap_candidates(obj, self._snap_mode)
+                    )
+                extra_count += 1
+
+        if not all_cands:
+            return None
+
+        if self._snap_mode == "LAYER":
             best_cand, best_elem, best_obj, best_d2 = None, None, None, float("inf")
-            for cand, elem, obj in all_layer_cands:
+            for cand, elem, obj, max_tol in all_cands:
                 sp = location_3d_to_region_2d(region, rv3d, Vector(cand["snap_world"]))
                 if sp is None:
                     continue
                 d2 = (sp.x - mx) ** 2 + (sp.y - my) ** 2
-                if d2 < best_d2:
+                if d2 < best_d2 and d2 < max_tol * max_tol:
                     best_d2 = d2
                     best_cand = cand
                     best_elem = elem
@@ -6591,46 +6673,16 @@ class DrawParametricDimension(bpy.types.Operator, PolylineOperator, tool.Ifc.Ope
             result["obj"] = best_obj
             return result
 
-        # VERTEX or EDGE — profile-based candidates.
-        # Build a tagged list of (candidate, element, obj) so the best match from
-        # any object carries the right element reference into _build_ifc_anchor.
-        all_cands = [(c, element, hit_obj) for c in self._snap_cand_cache]
-
-        # Also query nearby objects whose 3D bbox contains the hit point.
-        if hit_pt is not None and self.objs_2d_bbox:
-            file = tool.Ifc.get()
-            extra_count = 0
-            for obj, _bbox2d in self.objs_2d_bbox:
-                if extra_count >= 4:
-                    break
-                if obj is hit_obj:
-                    continue
-                if obj.data is None or not isinstance(obj.data, bpy.types.Mesh):
-                    continue
-                extra_elem = tool.Ifc.get_entity(obj)
-                if not extra_elem or not hasattr(extra_elem, "GlobalId"):
-                    continue
-                in_bbox = self._pt_in_obj_bbox(obj, hit_pt)
-                if not in_bbox:
-                    continue
-                extra_ptr = obj.as_pointer()
-                if extra_ptr not in self._snap_cand_multi_cache:
-                    placement_override = {extra_elem.id(): np.array(obj.matrix_world)}
-                    self._snap_cand_multi_cache[extra_ptr] = drawing_api.get_profile_snap_candidates(
-                        file, extra_elem, placement_override
-                    )
-                all_cands.extend((c, extra_elem, obj) for c in self._snap_cand_multi_cache[extra_ptr])
-                extra_count += 1
-
+        # VERTEX or EDGE
         best_cand, best_elem, best_obj, best_d2 = None, None, None, float("inf")
-        for cand, elem, obj in all_cands:
+        for cand, elem, obj, max_tol in all_cands:
             if cand["type"] != self._snap_mode:
                 continue
             sp = location_3d_to_region_2d(region, rv3d, Vector(cand["snap_world"]))
             if sp is None:
                 continue
             d2 = (sp.x - mx) ** 2 + (sp.y - my) ** 2
-            if d2 < best_d2:
+            if d2 < best_d2 and d2 < max_tol * max_tol:
                 best_d2 = d2
                 best_cand = cand
                 best_elem = elem
@@ -6657,6 +6709,15 @@ class DrawParametricDimension(bpy.types.Operator, PolylineOperator, tool.Ifc.Ope
             return drawing_api.build_anchor_from_profile_vert(file, element, candidate)
         if snap_kind == "EDGE" and candidate.get("profile_x_m") is not None:
             return drawing_api.build_anchor_from_profile_edge(file, element, candidate)
+        if snap_kind in ("VERTEX", "EDGE") and candidate.get("local_m") is not None:
+            return drawing_api.build_anchor_from_local_point(
+                element, snap_kind, candidate["snap_world"], candidate["local_m"]
+            )
+        if snap_kind == "FACE":
+            hit_location = candidate.get("snap_world", (0.0, 0.0, 0.0))
+            hit_normal = candidate.get("face_normal_world")
+            if hit_normal:
+                return drawing_api.build_anchor_from_hit(file, element, hit_location, hit_normal)
         pt = candidate.get("snap_world", (0.0, 0.0, 0.0))
         return drawing_api.make_world_anchor(list(pt))
 
@@ -6673,9 +6734,10 @@ class DrawParametricDimension(bpy.types.Operator, PolylineOperator, tool.Ifc.Ope
                     "snap_world": cand.get("snap_world"),
                 })
             elif cand.get("snap") == "FACE":
+                fv = cand.get("face_verts", [])
                 _snap_draw_data.update({
                     "type": "FACE",
-                    "face_verts": cand.get("face_verts", []),
+                    "face_verts": fv,
                     "snap_world": cand.get("snap_world"),
                 })
             elif cand.get("snap") == "EDGE":
@@ -6796,26 +6858,27 @@ class DrawParametricDimension(bpy.types.Operator, PolylineOperator, tool.Ifc.Ope
             pset_props["ForcePerpendicularToFace"] = True
         ifcopenshell.api.run("pset.edit_pset", file, pset=pset_entity, properties=pset_props)
 
-        if self._force_perpendicular:
-            placement_override: dict = {}
-            for a in anchors:
-                guid = a.get("guid")
-                if not guid:
-                    continue
-                try:
-                    elem = file.by_guid(guid)
-                    elem_obj = tool.Ifc.get_object(elem)
-                    if elem_obj:
-                        placement_override[elem.id()] = np.array(elem_obj.matrix_world)
-                except Exception:
-                    pass
-            resolved_pts = drawing_api.regenerate_dimension(
-                file, annotation,
-                shape_cache=getattr(self, "_shape_cache", None),
-                placement_override=placement_override,
-            )
-            if resolved_pts:
-                _update_blender_curve(annotation, resolved_pts)
+        # Always regenerate from anchor data so the curve reflects the true IFC
+        # face positions rather than the raw cursor positions from the polyline.
+        placement_override: dict = {}
+        for a in anchors:
+            guid = a.get("guid")
+            if not guid:
+                continue
+            try:
+                elem = file.by_guid(guid)
+                elem_obj = tool.Ifc.get_object(elem)
+                if elem_obj:
+                    placement_override[elem.id()] = np.array(elem_obj.matrix_world)
+            except Exception:
+                pass
+        resolved_pts = drawing_api.regenerate_dimension(
+            file, annotation,
+            shape_cache=getattr(self, "_shape_cache", None),
+            placement_override=placement_override,
+        )
+        if resolved_pts:
+            _update_blender_curve(annotation, resolved_pts)
 
         from bonsai.bim.module.drawing import handler as _drawing_handler
         _drawing_handler.invalidate_dim_index()
@@ -7042,6 +7105,82 @@ def _draw_snap_indicator_global():
             pass
 
 
+# Separate draw data dict and POST_PIXEL callback for SetDimensionAnchor hover —
+# avoids GPU matrix state issues by working in pre-converted 2D screen coords.
+_anchor_hover_draw_data: dict = {}
+
+
+def _draw_anchor_hover_global():
+    """POST_PIXEL callback — draws the face/edge/vertex hover indicator for SetDimensionAnchor."""
+    data = _anchor_hover_draw_data
+    if not data or not data.get("type"):
+        return
+    import gpu
+    from gpu_extras.batch import batch_for_shader
+    try:
+        shader = gpu.shader.from_builtin("UNIFORM_COLOR")
+        gpu.state.blend_set("ALPHA")
+        snap_type = data["type"]
+
+        if snap_type == "FACE":
+            verts = data.get("face_verts_2d", [])
+            if len(verts) >= 3:
+                lines = []
+                for i in range(len(verts)):
+                    lines.append(verts[i])
+                    lines.append(verts[(i + 1) % len(verts)])
+                shader.bind()
+                shader.uniform_float("color", (0.2, 0.55, 1.0, 0.9))
+                gpu.state.line_width_set(4.0)
+                batch_for_shader(shader, "LINES", {"pos": lines}).draw(shader)
+
+        elif snap_type == "EDGE":
+            v0, v1 = data.get("v0_2d"), data.get("v1_2d")
+            if v0 and v1:
+                shader.bind()
+                shader.uniform_float("color", (1.0, 0.65, 0.0, 1.0))
+                gpu.state.line_width_set(6.0)
+                batch_for_shader(shader, "LINES", {"pos": [v0, v1]}).draw(shader)
+                gpu.state.point_size_set(12.0)
+                batch_for_shader(shader, "POINTS", {"pos": [v0, v1]}).draw(shader)
+
+        elif snap_type == "LAYER":
+            shader.bind()
+            shader.uniform_float("color", (0.2, 0.9, 0.5, 1.0))
+            corners = data.get("seam_corners_2d", [])
+            n = len(corners)
+            if n >= 2:
+                lines = []
+                for i in range(n):
+                    lines.append(corners[i])
+                    lines.append(corners[(i + 1) % n])
+                gpu.state.line_width_set(5.0)
+                batch_for_shader(shader, "LINES", {"pos": lines}).draw(shader)
+                gpu.state.point_size_set(10.0)
+                batch_for_shader(shader, "POINTS", {"pos": corners}).draw(shader)
+            pt = data.get("snap_2d")
+            if pt:
+                gpu.state.point_size_set(20.0)
+                batch_for_shader(shader, "POINTS", {"pos": [pt]}).draw(shader)
+
+        elif snap_type == "VERTEX":
+            pt = data.get("snap_2d")
+            shader.bind()
+            shader.uniform_float("color", (1.0, 0.2, 0.4, 1.0))
+            if pt:
+                gpu.state.point_size_set(20.0)
+                batch_for_shader(shader, "POINTS", {"pos": [pt]}).draw(shader)
+
+    except Exception:
+        pass
+    finally:
+        try:
+            gpu.state.blend_set("NONE")
+            gpu.state.line_width_set(1.0)
+        except Exception:
+            pass
+
+
 class SetDimensionAnchor(bpy.types.Operator, tool.Ifc.Operator):
     """Interactively anchor dimension vertices to IFC element faces.
 
@@ -7105,7 +7244,7 @@ class SetDimensionAnchor(bpy.types.Operator, tool.Ifc.Operator):
             return False
         ptype = ifcopenshell.util.element.get_predefined_type(element)
         if ptype not in ("DIMENSION", "RADIUS", "DIAMETER", "ANGLE", "PLAN_LEVEL", "SECTION_LEVEL"):
-            cls.poll_message_set("Annotation must be a dimension type.")
+            cls.poll_message_set("Annotation must be a dimension or elevation type.")
             return False
         return True
 
@@ -7133,9 +7272,9 @@ class SetDimensionAnchor(bpy.types.Operator, tool.Ifc.Operator):
         self._hover_last_px = (-9999, -9999)
         self._hover_highlighted_obj = None
         self._snap_mode = "FACE"
-        _snap_draw_data.clear()
+        _anchor_hover_draw_data.clear()
         self._draw_handler = bpy.types.SpaceView3D.draw_handler_add(
-            _draw_snap_indicator_global, (), "WINDOW", "POST_VIEW"
+            _draw_anchor_hover_global, (), "WINDOW", "POST_PIXEL"
         )
 
         # When invoked from a panel, context.region_data is None.
@@ -7166,7 +7305,7 @@ class SetDimensionAnchor(bpy.types.Operator, tool.Ifc.Operator):
         if event.type == "ESC" or (event.type == "RIGHTMOUSE" and event.value == "PRESS"):
             self._clear_hover_highlight(context)
             context.workspace.status_text_set(None)
-            _snap_draw_data.clear()
+            _anchor_hover_draw_data.clear()
             if self._draw_handler:
                 bpy.types.SpaceView3D.draw_handler_remove(self._draw_handler, "WINDOW")
                 self._draw_handler = None
@@ -7188,6 +7327,13 @@ class SetDimensionAnchor(bpy.types.Operator, tool.Ifc.Operator):
             self._cycle_hover(context)
             return {"RUNNING_MODAL"}
 
+        if event.type == "LEFTMOUSE" and event.value == "RELEASE":
+            # Swallow LMB RELEASE throughout the modal's lifetime.
+            # When ClickNearestDimensionAnchor hands off to this modal, Blender
+            # re-delivers that same RELEASE here; passing it through would let
+            # view3d.select steal the active object away from the annotation.
+            return {"RUNNING_MODAL"}
+
         if event.type == "LEFTMOUSE" and event.value == "PRESS":
             if self._phase == "PICK_VERTEX":
                 self._handle_vertex_pick(context, event)
@@ -7207,7 +7353,7 @@ class SetDimensionAnchor(bpy.types.Operator, tool.Ifc.Operator):
     def _cleanup(self, context):
         self._clear_hover_highlight(context)
         context.workspace.status_text_set(None)
-        _snap_draw_data.clear()
+        _anchor_hover_draw_data.clear()
         if self._draw_handler:
             bpy.types.SpaceView3D.draw_handler_remove(self._draw_handler, "WINDOW")
             self._draw_handler = None
@@ -7354,12 +7500,15 @@ class SetDimensionAnchor(bpy.types.Operator, tool.Ifc.Operator):
             elif snap_type == "EDGE" and snap.get("profile_x_m") is not None:
                 anchor = drawing_api.build_anchor_from_profile_edge(file, element, snap)
             elif snap_type in ("VERTEX", "EDGE") and snap.get("snap_world") is not None:
-                # Tessellation fallback — no IFC profile data available.
-                # Use the snap position as a static WORLD anchor rather than a
-                # FACE fingerprint, so the endpoint stays at the correct vertex/
-                # edge position instead of drifting to the face centre.
+                # Tessellation fallback — element has no IfcExtrudedAreaSolid profile.
+                # Use element-local coordinates so the anchor follows the element
+                # through moves and rotations (LOCAL_POINT method).
                 sw = snap["snap_world"]
-                anchor = drawing_api.make_world_anchor([float(sw[0]), float(sw[1]), float(sw[2])])
+                local_m = snap.get("local_m")
+                if local_m is not None:
+                    anchor = drawing_api.build_anchor_from_local_point(element, snap_type, sw, local_m)
+                else:
+                    anchor = drawing_api.make_world_anchor([float(sw[0]), float(sw[1]), float(sw[2])])
             else:
                 hit_m = (float(location.x), float(location.y), float(location.z))
                 normal_m = (float(normal.x), float(normal.y), float(normal.z))
@@ -7375,6 +7524,25 @@ class SetDimensionAnchor(bpy.types.Operator, tool.Ifc.Operator):
             return
 
         _do_write_anchor(self._annotation, self._annotation_obj, anchor, self._active_vertex_idx, self._shape_cache)
+
+        # For elevation annotations the whole object should jump to the face hit
+        # (XY and Z), not just update Z via the object-placement path in
+        # _update_elevation_marker_z.
+        ptype = ifcopenshell.util.element.get_predefined_type(self._annotation)
+        if ptype in ("SECTION_LEVEL", "PLAN_LEVEL"):
+            from mathutils import Vector as _mVector
+            hit_pt = anchor.get("pt")
+            target_z = float(hit_pt[2]) if hit_pt else float(location.z)
+            hit_world = _mVector((float(location.x), float(location.y), target_z))
+            m = self._annotation_obj.matrix_world.copy()
+            m.translation = hit_world
+            ifcopenshell.api.run("geometry.edit_object_placement", file, product=self._annotation, matrix=np.array(m))
+            if self._annotation_obj.parent:
+                self._annotation_obj.location = self._annotation_obj.parent.matrix_world.inverted() @ hit_world
+            else:
+                self._annotation_obj.location = hit_world
+            _zero_elevation_annotation_spline_z(self._annotation, self._annotation_obj)
+
         self.report(
             {"INFO"},
             f"Vertex {self._active_vertex_idx} → {element.is_a()}/{element.Name or element.GlobalId} [{anchor.get('type')}]",
@@ -7402,6 +7570,20 @@ class SetDimensionAnchor(bpy.types.Operator, tool.Ifc.Operator):
             origin = origin - direction * 1e4
         return origin, direction
 
+    def _get_current_anchor_guid(self) -> "Optional[str]":
+        """Return the element GUID the active anchor is currently bound to, or None."""
+        if self._active_vertex_idx < 0 or not self._annotation:
+            return None
+        try:
+            pset_data = ifcopenshell.util.element.get_pset(self._annotation, "BBIM_Dimension")
+            if not pset_data or not pset_data.get("Anchors"):
+                return None
+            anchors = json.loads(pset_data["Anchors"])
+            anchor = anchors[self._active_vertex_idx]
+            return anchor.get("guid") or None
+        except Exception:
+            return None
+
     def _compute_candidates(self, context, coord):
         """Cast a ray from *coord* and return a ranked list of hit candidates.
 
@@ -7413,10 +7595,35 @@ class SetDimensionAnchor(bpy.types.Operator, tool.Ifc.Operator):
 
         origin, direction = self._unproject_coord(coord)
         depsgraph = context.evaluated_depsgraph_get()
+        view_layer = context.view_layer
+
+        def _is_hidden(obj):
+            h = obj.hide_get(view_layer=view_layer)
+            hv = obj.hide_viewport
+            vis = obj.visible_get()
+            return h or hv or not vis
+
+        # In FACE mode only snap to faces whose normal is roughly perpendicular to
+        # the camera view direction (i.e., wall/vertical faces in plan view, not
+        # floor/ceiling faces).  |dot| < 0.5 ≈ within 60° of perpendicular.
+        _face_cam_view = None
+        if self._snap_mode == "FACE":
+            _cam = bpy.context.scene.camera
+            if _cam:
+                _face_cam_view = (_cam.matrix_world.to_3x3() @ Vector((0.0, 0.0, -1.0))).normalized()
+
+        def _face_perp_ok(normal_w):
+            """Return True when the face is acceptably perpendicular to the camera."""
+            if _face_cam_view is None:
+                return True
+            return abs(normal_w.dot(_face_cam_view)) < 0.5
 
         # Scene-BVH pierce-through: O(log N) vs the previous O(N) per-object loop.
         # Each iteration steps past the last hit surface to reach the next object.
+        _DBG_GUIDS = {"1kGw8dvBT2zgE3OsifqnY8", "3YfgKSYh971wjlK2f3vaxy"}
+
         direct: list = []
+        ray_hit_objs: set = set()   # all IFC objects the ray passed through (any face)
         ray_origin = Vector(origin)
         _EPS = 1e-4
 
@@ -7428,25 +7635,50 @@ class SetDimensionAnchor(bpy.types.Operator, tool.Ifc.Operator):
                 break
             ray_origin = loc_w + direction * _EPS
             ifc_obj = getattr(hit_obj_eval, "original", hit_obj_eval)
+            _dbg_guid = getattr(tool.Ifc.get_entity(ifc_obj), "GlobalId", None)
+            if _dbg_guid in _DBG_GUIDS:
+                print(f"[dbg-ray] hit {_dbg_guid} obj={ifc_obj.name}")
             if ifc_obj == self._annotation_obj:
+                if _dbg_guid in _DBG_GUIDS: print(f"[dbg-ray] {_dbg_guid} SKIP: is annotation obj")
                 continue
-            if not ifc_obj.visible_get():
+            if _is_hidden(ifc_obj):
+                if _dbg_guid in _DBG_GUIDS: print(f"[dbg-ray] {_dbg_guid} SKIP: hidden h={ifc_obj.hide_get(view_layer=view_layer)} hv={ifc_obj.hide_viewport} vis={ifc_obj.visible_get()}")
                 continue
             if ifc_obj.type != "MESH":
+                if _dbg_guid in _DBG_GUIDS: print(f"[dbg-ray] {_dbg_guid} SKIP: type={ifc_obj.type}")
                 continue
             if not tool.Ifc.get_entity(ifc_obj):
+                if _dbg_guid in _DBG_GUIDS: print(f"[dbg-ray] {_dbg_guid} SKIP: no IFC entity")
                 continue
+            ray_hit_objs.add(ifc_obj)   # track even if face is non-perp
             mx = ifc_obj.matrix_world
-            fi = _prefer_perp_face_index(ifc_obj, loc_w, fi, world_matrix=mx)
+            # In FACE mode use the exact hit face; _prefer_perp_face_index is only
+            # needed for VERTEX/EDGE profile snapping.
+            if self._snap_mode != "FACE":
+                fi = _prefer_perp_face_index(ifc_obj, loc_w, fi, world_matrix=mx)
             normal = (
                 (mx.to_3x3() @ ifc_obj.data.polygons[fi].normal).normalized()
                 if fi is not None
                 else nrm_w.normalized()
             )
+            if not _face_perp_ok(normal):
+                if _dbg_guid in _DBG_GUIDS: print(f"[dbg-ray] {_dbg_guid} SKIP: face not perp normal={normal} dot={abs(normal.dot(_face_cam_view)) if _face_cam_view else 'N/A'}")
+                continue
             dist = (loc_w - origin).length
+            if _dbg_guid in _DBG_GUIDS: print(f"[dbg-ray] {_dbg_guid} ACCEPTED dist={dist:.4f}")
             direct.append((dist, ifc_obj, ifc_obj, mx, loc_w, normal, fi))
         if direct:
             direct.sort(key=lambda c: c[0])
+            # Prefer the element the anchor is currently bound to so that
+            # re-picking a gizmo dot defaults to the same element rather than
+            # whatever happened to be closest along the ray.
+            preferred_guid = self._get_current_anchor_guid()
+            if preferred_guid:
+                for _pi, _pc in enumerate(direct):
+                    if getattr(tool.Ifc.get_entity(_pc[1]), "GlobalId", None) == preferred_guid:
+                        if _pi > 0:
+                            direct.insert(0, direct.pop(_pi))
+                        break
             return [(o, m, mmx, l, n, f) for _, o, m, mmx, l, n, f in direct]
 
         # Proximity fallback — collect ALL candidates within TOL, sorted by perp distance.
@@ -7459,9 +7691,10 @@ class SetDimensionAnchor(bpy.types.Operator, tool.Ifc.Operator):
         for ifc_obj in context.scene.objects:
             if ifc_obj == self._annotation_obj:
                 continue
-            if not ifc_obj.visible_get():
+            if _is_hidden(ifc_obj):
                 continue
-            if not tool.Ifc.get_entity(ifc_obj):
+            elem = tool.Ifc.get_entity(ifc_obj)
+            if not elem:
                 continue
             if ifc_obj.type != "MESH":
                 continue
@@ -7489,11 +7722,17 @@ class SetDimensionAnchor(bpy.types.Operator, tool.Ifc.Operator):
             if not found:
                 continue
             loc_w = mx @ loc_l
-            fi = _prefer_perp_face_index(ifc_obj, loc_w, fi, world_matrix=mx)
+            if self._snap_mode != "FACE":
+                fi = _prefer_perp_face_index(ifc_obj, loc_w, fi, world_matrix=mx)
             normal = (mx.to_3x3() @ ifc_obj.data.polygons[fi].normal).normalized() if fi is not None else (mx.to_3x3() @ nrm_l).normalized()
+            if not _face_perp_ok(normal):
+                continue
             prox.append((perp_dist, ifc_obj, ifc_obj, mx, loc_w, normal, fi))
 
-        prox.sort(key=lambda c: c[0])
+        # Objects the ray directly passed through get priority over objects that
+        # are merely nearby — prevents adjacent windows/walls stealing the snap
+        # from an element the cursor is actually over.
+        prox.sort(key=lambda c: (0 if c[1] in ray_hit_objs else 1, c[0]))
         return [(o, m, mmx, l, n, f) for _, o, m, mmx, l, n, f in prox]
 
     def _handle_hover(self, context, event):
@@ -7523,31 +7762,45 @@ class SetDimensionAnchor(bpy.types.Operator, tool.Ifc.Operator):
         self._apply_hover_highlight(context)
 
     def _apply_hover_highlight(self, context):
-        """Select the current candidate object; compute snap geometry; update status."""
+        """Compute snap geometry for the current candidate and update the status bar."""
         if not self._hover_candidates:
             self._clear_hover_highlight(context)
-            _snap_draw_data.clear()
             return
 
         ifc_obj, _, _, _, _, face_index = self._hover_candidates[self._hover_index]
 
-        # Only update selection when the highlighted object changes.
-        if ifc_obj != self._hover_highlighted_obj:
-            if self._hover_highlighted_obj:
-                try:
-                    self._hover_highlighted_obj.select_set(False)
-                except Exception:
-                    pass
-            self._hover_highlighted_obj = ifc_obj
-            try:
-                ifc_obj.select_set(True)
-                context.view_layer.objects.active = ifc_obj
-            except Exception:
-                pass
-
-        _snap_draw_data.clear()
-        _snap_draw_data.update(self._compute_snap_geom(ifc_obj, face_index, self._hover_last_px))
-
+        sg = self._compute_snap_geom(ifc_obj, face_index, self._hover_last_px)
+        _anchor_hover_draw_data.clear()
+        if sg and self._region and self._rv3d:
+            from bpy_extras.view3d_utils import location_3d_to_region_2d
+            snap_type = sg.get("type")
+            _anchor_hover_draw_data["type"] = snap_type
+            if snap_type == "FACE":
+                verts_2d = [
+                    tuple(location_3d_to_region_2d(self._region, self._rv3d, v) or (0, 0))
+                    for v in sg.get("face_verts", [])
+                ]
+                _anchor_hover_draw_data["face_verts_2d"] = verts_2d
+            elif snap_type == "EDGE":
+                v0 = location_3d_to_region_2d(self._region, self._rv3d, sg["v0"])
+                v1 = location_3d_to_region_2d(self._region, self._rv3d, sg["v1"])
+                _anchor_hover_draw_data["v0_2d"] = tuple(v0) if v0 else None
+                _anchor_hover_draw_data["v1_2d"] = tuple(v1) if v1 else None
+            elif snap_type == "LAYER":
+                pt = sg.get("snap_world")
+                if pt:
+                    sp = location_3d_to_region_2d(self._region, self._rv3d, pt)
+                    _anchor_hover_draw_data["snap_2d"] = tuple(sp) if sp else None
+                corners_3d = sg.get("seam_corners", [])
+                _anchor_hover_draw_data["seam_corners_2d"] = [
+                    tuple(location_3d_to_region_2d(self._region, self._rv3d, c) or (0, 0))
+                    for c in corners_3d
+                ]
+            elif snap_type == "VERTEX":
+                pt = sg.get("snap_world")
+                if pt:
+                    sp = location_3d_to_region_2d(self._region, self._rv3d, pt)
+                    _anchor_hover_draw_data["snap_2d"] = tuple(sp) if sp else None
         entity = tool.Ifc.get_entity(ifc_obj)
         label = (entity.Name or entity.GlobalId) if entity else ifc_obj.name
         n = len(self._hover_candidates)
@@ -7563,13 +7816,9 @@ class SetDimensionAnchor(bpy.types.Operator, tool.Ifc.Operator):
                 break
 
     def _clear_hover_highlight(self, context):
-        """Deselect the highlighted object and restore the annotation as active."""
-        if self._hover_highlighted_obj:
-            try:
-                self._hover_highlighted_obj.select_set(False)
-            except Exception:
-                pass
-            self._hover_highlighted_obj = None
+        """Clear hover draw data and restore the annotation as the active object."""
+        self._hover_highlighted_obj = None
+        _anchor_hover_draw_data.clear()
         try:
             self._annotation_obj.select_set(True)
             context.view_layer.objects.active = self._annotation_obj
@@ -7578,7 +7827,7 @@ class SetDimensionAnchor(bpy.types.Operator, tool.Ifc.Operator):
 
     def cancel(self, context):
         """Called when the operator is cancelled externally — clean up GPU handler."""
-        _snap_draw_data.clear()
+        _anchor_hover_draw_data.clear()
         if self._draw_handler:
             bpy.types.SpaceView3D.draw_handler_remove(self._draw_handler, "WINDOW")
             self._draw_handler = None
@@ -7591,6 +7840,82 @@ class SetDimensionAnchor(bpy.types.Operator, tool.Ifc.Operator):
 
     # ------------------------------------------------------------------
     # Snap geometry helpers
+
+    @staticmethod
+    def _coplanar_face_outline(obj, mx, seed_face):
+        """Return ordered world-space vertices forming the outline of the planar region.
+
+        Finds all polygons on *obj* coplanar with *seed_face*, collects their
+        boundary edges (edges shared by only one polygon in the group), then
+        walks those edges into a single ordered loop and converts to world space.
+        Falls back to the seed face's own vertices if the walk fails.
+        """
+        # Skip the full boundary-walk for highly-tessellated meshes (e.g. terrain).
+        # The O(N) polygon scan freezes Blender on objects with thousands of faces.
+        if len(obj.data.polygons) > 500:
+            return [tuple(mx @ obj.data.vertices[vi].co) for vi in seed_face.vertices]
+
+        target_n = seed_face.normal.copy()
+        target_d = seed_face.center.dot(target_n)
+        tol_n = 1e-3
+        tol_d = 1e-3
+
+        # Collect all coplanar polygon indices
+        coplanar = [
+            i for i, p in enumerate(obj.data.polygons)
+            if abs(p.normal.dot(target_n) - 1.0) <= tol_n
+            and abs(p.center.dot(target_n) - target_d) <= tol_d
+        ]
+
+        # Count edge appearances; boundary edges appear exactly once
+        edge_count: dict = {}
+        for fi in coplanar:
+            poly = obj.data.polygons[fi]
+            verts = list(poly.vertices)
+            n = len(verts)
+            for i in range(n):
+                e = (min(verts[i], verts[(i + 1) % n]), max(verts[i], verts[(i + 1) % n]))
+                edge_count[e] = edge_count.get(e, 0) + 1
+        boundary = [e for e, cnt in edge_count.items() if cnt == 1]
+
+        if not boundary:
+            return [tuple(mx @ obj.data.vertices[vi].co) for vi in seed_face.vertices]
+
+        # Build adjacency map
+        adj: dict = {}
+        for a, b in boundary:
+            adj.setdefault(a, []).append(b)
+            adj.setdefault(b, []).append(a)
+
+        # Walk ALL disconnected loops (outer perimeter + any window/door hole loops).
+        # A wall with a window void has two loops: the outer wall outline and the
+        # inner opening perimeter.  We want the largest loop (outer boundary).
+        unvisited = set(v for e in boundary for v in e)
+        loops: list = []
+        while unvisited:
+            start = next(iter(unvisited))
+            ring = [start]
+            unvisited.discard(start)
+            prev, cur = None, start
+            for _ in range(len(boundary) + 1):
+                nxts = [v for v in adj.get(cur, []) if v != prev]
+                if not nxts or nxts[0] == start:
+                    break
+                prev, cur = cur, nxts[0]
+                if cur in unvisited:
+                    unvisited.discard(cur)
+                    ring.append(cur)
+                else:
+                    break
+            if len(ring) >= 3:
+                loops.append(ring)
+
+        if not loops:
+            return [tuple(mx @ obj.data.vertices[vi].co) for vi in seed_face.vertices]
+
+        # The outer perimeter has the most vertices; window/door holes are smaller.
+        best_ring = max(loops, key=len)
+        return [tuple(mx @ obj.data.vertices[vi].co) for vi in best_ring]
 
     def _compute_snap_geom(self, hit_obj, face_index, coord) -> dict:
         """Return snap draw-data dict for the current snap mode and hit face.
@@ -7617,6 +7942,10 @@ class SetDimensionAnchor(bpy.types.Operator, tool.Ifc.Operator):
         face_verts_world = [tuple(mx @ hit_obj.data.vertices[vi].co) for vi in face.vertices]
 
         if self._snap_mode == "FACE":
+            # For tessellated meshes a single polygon may be a tiny micro-triangle.
+            # Find all coplanar faces on the same plane and walk their boundary edges
+            # to produce the full planar face outline.
+            face_verts_world = self._coplanar_face_outline(hit_obj, mx, face)
             return {"type": "FACE", "face_verts": face_verts_world}
 
         # Try profile-based snap candidates first (IFC-native, index-stable).
@@ -7658,7 +7987,12 @@ class SetDimensionAnchor(bpy.types.Operator, tool.Ifc.Operator):
                         d2 = dx * dx + dy * dy
                         if d2 < best_d2:
                             best_d2, best_i = d2, i
-                return {"type": "VERTEX", "snap_world": face_verts_world[best_i]}
+                local_co = hit_obj.data.vertices[face.vertices[best_i]].co
+                return {
+                    "type": "VERTEX",
+                    "snap_world": face_verts_world[best_i],
+                    "local_m": (local_co.x, local_co.y, local_co.z),
+                }
 
             if self._snap_mode == "EDGE":
                 best_e, best_d2 = 0, float("inf")
@@ -7675,7 +8009,15 @@ class SetDimensionAnchor(bpy.types.Operator, tool.Ifc.Operator):
                 i0, i1 = best_e, (best_e + 1) % n
                 v0_w, v1_w = face_verts_world[i0], face_verts_world[i1]
                 mid_w = ((v0_w[0] + v1_w[0]) * 0.5, (v0_w[1] + v1_w[1]) * 0.5, (v0_w[2] + v1_w[2]) * 0.5)
-                return {"type": "EDGE", "v0": v0_w, "v1": v1_w, "snap_world": mid_w}
+                v0_l = hit_obj.data.vertices[face.vertices[i0]].co
+                v1_l = hit_obj.data.vertices[face.vertices[i1]].co
+                mid_l = ((v0_l.x + v1_l.x) * 0.5, (v0_l.y + v1_l.y) * 0.5, (v0_l.z + v1_l.z) * 0.5)
+                return {
+                    "type": "EDGE",
+                    "v0": v0_w, "v1": v1_w,
+                    "snap_world": mid_w,
+                    "local_m": mid_l,
+                }
 
         if self._snap_mode == "LAYER":
             element = tool.Ifc.get_entity(hit_obj)
@@ -7708,30 +8050,37 @@ class SetDimensionAnchor(bpy.types.Operator, tool.Ifc.Operator):
 def _do_write_anchor(annotation, annotation_obj, new_anchor: dict, vertex_index: int, shape_cache=None) -> None:
     """Write one anchor into the BBIM_Dimension pset and regenerate the curve."""
     file = tool.Ifc.get()
+    ptype = ifcopenshell.util.element.get_predefined_type(annotation)
+    _is_elevation = ptype in ("SECTION_LEVEL", "PLAN_LEVEL")
 
     pset_data = ifcopenshell.util.element.get_pset(annotation, "BBIM_Dimension")
 
-    if pset_data and pset_data.get("Anchors"):
-        try:
-            anchors: list = json.loads(pset_data["Anchors"])
-        except Exception:
-            anchors = []
+    if _is_elevation:
+        # Elevation markers use exactly one anchor (the Z reference point).
+        anchors: list = [new_anchor]
     else:
-        anchors = _anchors_from_spline(annotation_obj, file)
+        if pset_data and pset_data.get("Anchors"):
+            try:
+                anchors = json.loads(pset_data["Anchors"])
+            except Exception:
+                anchors = []
+        else:
+            anchors = _anchors_from_spline(annotation_obj, file)
 
-    while len(anchors) <= vertex_index:
-        idx = len(anchors)
-        if annotation_obj and annotation_obj.data and hasattr(annotation_obj.data, "splines") and annotation_obj.data.splines:
-            pts = annotation_obj.data.splines[0].points
-            if idx < len(pts):
-                co = annotation_obj.matrix_world @ pts[idx].co.xyz
-                import ifcopenshell.api.drawing as drawing_api
-                anchors.append(drawing_api.make_world_anchor([float(co.x), float(co.y), float(co.z)]))
-                continue
-        import ifcopenshell.api.drawing as drawing_api
-        anchors.append(drawing_api.make_world_anchor([0.0, 0.0, 0.0]))
+        while len(anchors) <= vertex_index:
+            idx = len(anchors)
+            if annotation_obj and annotation_obj.data and hasattr(annotation_obj.data, "splines") and annotation_obj.data.splines:
+                pts = annotation_obj.data.splines[0].points
+                if idx < len(pts):
+                    co = annotation_obj.matrix_world @ pts[idx].co.xyz
+                    import ifcopenshell.api.drawing as drawing_api
+                    anchors.append(drawing_api.make_world_anchor([float(co.x), float(co.y), float(co.z)]))
+                    continue
+            import ifcopenshell.api.drawing as drawing_api
+            anchors.append(drawing_api.make_world_anchor([0.0, 0.0, 0.0]))
 
-    anchors[vertex_index] = new_anchor
+        anchors[vertex_index] = new_anchor
+
     anchors_json = json.dumps(anchors)
 
     if pset_data:
@@ -7759,16 +8108,225 @@ def _do_write_anchor(annotation, annotation_obj, new_anchor: dict, vertex_index:
         except Exception:
             pass
 
-    import ifcopenshell.api.drawing as drawing_api
-    resolved_pts = drawing_api.regenerate_dimension(
-        file,
-        annotation,
-        shape_cache=shape_cache,
-        placement_override=placement_override,
-    )
-    if resolved_pts:
-        _update_blender_curve(annotation, resolved_pts)
+    if _is_elevation:
+        _update_elevation_marker_z(file, annotation, shape_cache=shape_cache, placement_override=placement_override)
+    else:
+        import ifcopenshell.api.drawing as drawing_api
+        resolved_pts = drawing_api.regenerate_dimension(
+            file,
+            annotation,
+            shape_cache=shape_cache,
+            placement_override=placement_override,
+        )
+        if resolved_pts:
+            _update_blender_curve(annotation, resolved_pts)
 
+
+
+class AddElevationAnnotation(SetDimensionAnchor):
+    """Interactively place a SECTION_LEVEL or PLAN_LEVEL annotation.
+
+    Runs the same face / layer / edge / vertex snap UI as SetDimensionAnchor but
+    creates the annotation only AFTER the user clicks, placing it directly at the
+    picked elevation.  The anchor is stored in BBIM_Dimension so the annotation
+    tracks the element if it moves.
+    """
+
+    bl_idname = "bim.add_elevation_annotation"
+    bl_label = "Add Elevation Annotation"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        if not tool.Ifc.get():
+            return False
+        if not context.scene.camera or not tool.Ifc.get_entity(context.scene.camera):
+            cls.poll_message_set("No active drawing.")
+            return False
+        if context.mode != "OBJECT":
+            cls.poll_message_set("Must be in Object Mode.")
+            return False
+        if not getattr(context, "space_data", None) or context.space_data.type != "VIEW_3D":
+            return False
+        ann_props = tool.Drawing.get_annotation_props()
+        return ann_props.object_type in ("SECTION_LEVEL", "PLAN_LEVEL")
+
+    def _invoke(self, context, event):
+        props = tool.Drawing.get_annotation_props()
+        dprops = tool.Drawing.get_document_props()
+        self._create_drawing = dprops.get_active_drawing()
+        if not self._create_drawing:
+            self.report({"WARNING"}, "No active drawing.")
+            return {"CANCELLED"}
+        self._create_object_type = props.object_type
+        self._create_relating_type = (
+            tool.Ifc.get().by_id(int(props.relating_type_id))
+            if props.relating_type_id and props.relating_type_id != "0"
+            else None
+        )
+        # No existing annotation — we create it on the click.
+        self._annotation = None
+        self._annotation_obj = None
+        self._shape_cache = {}
+        self._phase = "PICK_FACE"
+        self._active_vertex_idx = 0
+        self._hover_candidates = []
+        self._hover_index = 0
+        self._hover_last_px = (-9999, -9999)
+        self._hover_highlighted_obj = None
+        self._snap_mode = "FACE"
+        _anchor_hover_draw_data.clear()
+        self._draw_handler = bpy.types.SpaceView3D.draw_handler_add(
+            _draw_anchor_hover_global, (), "WINDOW", "POST_PIXEL"
+        )
+        self._region, self._rv3d = None, None
+        for area in context.screen.areas:
+            if area.type == "VIEW_3D":
+                for region in area.regions:
+                    if region.type == "WINDOW":
+                        self._region = region
+                        break
+                if area.spaces and area.spaces[0].type == "VIEW_3D":
+                    self._rv3d = area.spaces[0].region_3d
+                break
+        context.workspace.status_text_set(
+            f"Hover over an element  |  Click: place {self._create_object_type}"
+            "  |  TAB: cycle snap  |  RMB/ESC: Cancel"
+        )
+        context.window_manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def _modal(self, context, event):
+        if event.type == "ESC" or (event.type == "RIGHTMOUSE" and event.value == "PRESS"):
+            self._cleanup(context)
+            return {"FINISHED"}
+
+        if event.type == "MOUSEMOVE" and self._phase == "PICK_FACE":
+            self._handle_hover(context, event)
+            return {"RUNNING_MODAL"}
+
+        if event.type == "TAB" and event.value == "PRESS" and self._phase == "PICK_FACE":
+            self._cycle_hover(context)
+            return {"RUNNING_MODAL"}
+
+        if event.type == "LEFTMOUSE" and event.value == "RELEASE":
+            return {"RUNNING_MODAL"}
+
+        if event.type == "LEFTMOUSE" and event.value == "PRESS":
+            wrote = self._handle_face_pick_create(context, event)
+            if wrote:
+                self._cleanup(context)
+                return {"FINISHED"}
+            return {"RUNNING_MODAL"}
+
+        return {"PASS_THROUGH"}
+
+    def _handle_face_pick_create(self, context, event):
+        """Pick a face, create the elevation annotation there, write the anchor."""
+        region = self._region
+        rv3d = self._rv3d
+        if not region or not rv3d:
+            return False
+
+        self._clear_hover_highlight(context)
+
+        coord = (event.mouse_x - region.x, event.mouse_y - region.y)
+        dx = coord[0] - self._hover_last_px[0]
+        dy = coord[1] - self._hover_last_px[1]
+        if dx * dx + dy * dy > self._HOVER_THROTTLE_PX_SQ or not self._hover_candidates:
+            self._hover_candidates = self._compute_candidates(context, coord)
+            self._hover_index = 0
+
+        if not self._hover_candidates:
+            self.report({"WARNING"}, "Nothing under cursor — click on a model element")
+            return False
+
+        idx = min(self._hover_index, len(self._hover_candidates) - 1)
+        hit_obj, hit_mesh, hit_mesh_mx, location, normal, face_index = self._hover_candidates[idx]
+
+        element = tool.Ifc.get_entity(hit_obj)
+        if not element:
+            self.report({"WARNING"}, f"'{hit_obj.name}' is not an IFC element")
+            return False
+
+        file = tool.Ifc.get()
+        placement_override = {element.id(): np.array(hit_obj.matrix_world)}
+        snap = self._compute_snap_geom(hit_obj, face_index, coord)
+        snap_type = snap.get("type", "FACE")
+
+        import ifcopenshell.api.drawing as drawing_api
+        try:
+            if snap_type == "LAYER" and snap.get("method") == "LAYER_BOUNDARY":
+                anchor = drawing_api.build_anchor_from_layer_boundary(file, element, snap)
+            elif snap_type == "VERTEX" and snap.get("profile_x_m") is not None:
+                anchor = drawing_api.build_anchor_from_profile_vert(file, element, snap)
+            elif snap_type == "EDGE" and snap.get("profile_x_m") is not None:
+                anchor = drawing_api.build_anchor_from_profile_edge(file, element, snap)
+            elif snap_type in ("VERTEX", "EDGE") and snap.get("snap_world") is not None:
+                sw = snap["snap_world"]
+                local_m = snap.get("local_m")
+                if local_m is not None:
+                    anchor = drawing_api.build_anchor_from_local_point(element, snap_type, sw, local_m)
+                else:
+                    anchor = drawing_api.make_world_anchor([float(sw[0]), float(sw[1]), float(sw[2])])
+            else:
+                hit_m = (float(location.x), float(location.y), float(location.z))
+                normal_m = (float(normal.x), float(normal.y), float(normal.z))
+                anchor = drawing_api.build_anchor_from_hit(
+                    file, element, hit_m, normal_m,
+                    shape_cache=self._shape_cache,
+                    placement_override=placement_override,
+                )
+        except Exception as exc:
+            import traceback as _tb
+            _tb.print_exc()
+            self.report({"ERROR"}, f"build_anchor failed: {exc}")
+            return False
+
+        obj = core.add_annotation(
+            tool.Ifc, tool.Collector, tool.Drawing,
+            drawing=self._create_drawing,
+            object_type=self._create_object_type,
+            relating_type=self._create_relating_type,
+            enable_editing=False,
+        )
+        if not obj:
+            return False
+
+        annotation = tool.Ifc.get_entity(obj)
+        self._annotation = annotation
+        self._annotation_obj = obj
+        _do_write_anchor(annotation, obj, anchor, 0, self._shape_cache)
+
+        # Move annotation to the face hit position (XY and Z).
+        # obj.matrix_world may be stale (depsgraph not yet evaluated), so we
+        # override the translation column directly from the known hit point.
+        from mathutils import Vector as _mVector
+        hit_pt = anchor.get("pt")
+        target_z = float(hit_pt[2]) if hit_pt else float(location.z)
+        hit_world = _mVector((float(location.x), float(location.y), target_z))
+        m = obj.matrix_world.copy()
+        m.translation = hit_world
+        ifcopenshell.api.run("geometry.edit_object_placement", file, product=annotation, matrix=np.array(m))
+        if obj.parent:
+            obj.location = obj.parent.matrix_world.inverted() @ hit_world
+        else:
+            obj.location = hit_world
+
+        # Spline points were built from camera-space coords and may have a large
+        # local Z offset.  Zero it so the line sits at the same world elevation
+        # as the object origin (where the gizmo is drawn).
+        _zero_elevation_annotation_spline_z(annotation, obj)
+
+        tool.Blender.select_and_activate_single_object(context, obj)
+        self.report(
+            {"INFO"},
+            f"Vertex 0 → {element.is_a()}/{element.Name or element.GlobalId} [{anchor.get('type')}]",
+        )
+        return True
+
+    def _execute(self, context):
+        pass  # This operator is modal-only; always invoke with INVOKE_DEFAULT.
 
 
 class RegenerateDimensions(bpy.types.Operator, tool.Ifc.Operator):
@@ -7834,10 +8392,13 @@ class RegenerateDimensions(bpy.types.Operator, tool.Ifc.Operator):
             if not pset:
                 continue
 
-            # Sync anchor count to curve vertex count in case the user added or
-            # removed vertices in Edit Mode since the last regeneration.
+            ptype = ifcopenshell.util.element.get_predefined_type(annotation)
+            _is_elevation = ptype in ("SECTION_LEVEL", "PLAN_LEVEL")
+
+            # Sync anchor count to curve vertex count for true dimensions only.
+            # Elevation markers always have exactly one anchor regardless of vertex count.
             ann_obj = tool.Ifc.get_object(annotation)
-            if ann_obj and ann_obj.type == "CURVE":
+            if not _is_elevation and ann_obj and ann_obj.type == "CURVE":
                 _sync_dimension_anchors_to_curve(file, annotation, ann_obj)
 
             # Build a placement override from each referenced element's current
@@ -7865,19 +8426,27 @@ class RegenerateDimensions(bpy.types.Operator, tool.Ifc.Operator):
             except Exception:
                 pass
 
-            resolved_pts = drawing_api.regenerate_dimension(
-                file, annotation,
-                settings=geom_settings,
-                shape_cache=shape_cache,
-                placement_override=placement_override,
-            )
-            if not resolved_pts:
-                continue
+            if _is_elevation:
+                if _update_elevation_marker_z(
+                    file, annotation,
+                    settings=geom_settings,
+                    shape_cache=shape_cache,
+                    placement_override=placement_override,
+                ):
+                    updated += 1
+            else:
+                resolved_pts = drawing_api.regenerate_dimension(
+                    file, annotation,
+                    settings=geom_settings,
+                    shape_cache=shape_cache,
+                    placement_override=placement_override,
+                )
+                if not resolved_pts:
+                    continue
+                _update_blender_curve(annotation, resolved_pts)
+                updated += 1
 
-            _update_blender_curve(annotation, resolved_pts)
-            updated += 1
-
-        self.report({"INFO"}, f"Regenerated {updated} parametric dimension(s).")
+        self.report({"INFO"}, f"Regenerated {updated} parametric annotation(s).")
 
 
 # ---------------------------------------------------------------------------
@@ -7954,8 +8523,107 @@ def _update_blender_curve(
         pass
 
 
+def _update_elevation_marker_z(
+    file: "ifcopenshell.file",
+    annotation: "ifcopenshell.entity_instance",
+    settings=None,
+    shape_cache: Optional[dict] = None,
+    placement_override: Optional[dict] = None,
+) -> bool:
+    """For SECTION_LEVEL / PLAN_LEVEL: resolve anchor 0 elevation and slide all spline vertices to that Z.
+
+    Unlike regenerate_dimension (which rebuilds the full polyline from N anchors),
+    this preserves every vertex's X/Y and only updates Z, keeping the annotation's
+    drawn shape intact while tracking the anchored element's elevation.
+    Returns True if the spline was updated.
+    """
+    from ifcopenshell.api.drawing.resolve_anchor import resolve_anchor as _resolve_anchor
+    import ifcopenshell.api.pset as _pset_api
+    import json as _json
+
+    pset_data = ifcopenshell.util.element.get_pset(annotation, "BBIM_Dimension")
+    if not pset_data or not pset_data.get("Anchors"):
+        return False
+
+    try:
+        anchors: list = _json.loads(pset_data["Anchors"])
+    except Exception:
+        return False
+
+    if not anchors:
+        return False
+
+    pt = _resolve_anchor(file, anchors[0], settings, shape_cache or {}, placement_override)
+    if pt is None:
+        cached = anchors[0].get("pt")
+        pt = tuple(cached) if cached else None
+    if pt is None:
+        return False
+
+    target_z = pt[2]
+
+    # Persist the resolved pt so the index stays warm
+    anchors[0]["pt"] = list(pt)
+    pset_entity = file.by_id(pset_data["id"])
+    _pset_api.edit_pset(file, pset=pset_entity, properties={"Anchors": _json.dumps(anchors)})
+
+    obj = tool.Ifc.get_object(annotation)
+    if not obj:
+        return False
+
+    is_2d = _annotation_is_2d(annotation)
+    if is_2d:
+        # 2D annotations encode elevation in the object placement (world Z), not curve points.
+        from mathutils import Vector as _Vector
+        current_world = obj.matrix_world.to_translation()
+        new_world = _Vector((current_world.x, current_world.y, target_z))
+        # Build updated world matrix (replace Z translation only, preserve rotation/scale)
+        m = obj.matrix_world.copy()
+        m[2][3] = target_z
+        ifcopenshell.api.run("geometry.edit_object_placement", file, product=annotation, matrix=np.array(m))
+        # Update Blender visual position
+        if obj.parent:
+            obj.location = obj.parent.matrix_world.inverted() @ new_world
+        else:
+            obj.location = new_world
+        return True
+
+    if not obj.data or not hasattr(obj.data, "splines") or not obj.data.splines:
+        return True
+
+    from mathutils import Vector as _Vector
+    mx = obj.matrix_world
+    inv_mx = mx.inverted()
+
+    for spline in obj.data.splines:
+        for spt in spline.points:
+            world_pos = mx @ spt.co.to_3d()
+            new_local = inv_mx @ _Vector((world_pos.x, world_pos.y, target_z))
+            spt.co = (*new_local, 1.0)
+
+    try:
+        world_pts = []
+        for spline in obj.data.splines:
+            for spt in spline.points:
+                wp = mx @ spt.co.to_3d()
+                world_pts.append((wp.x, wp.y, wp.z))
+        _update_ifc_polyline(file, annotation, obj, world_pts)
+    except Exception:
+        pass
+
+    return True
+
+
 def _annotation_is_2d(annotation: ifcopenshell.entity_instance) -> bool:
-    """Return True if the annotation's representation uses 2D coordinates (plan view)."""
+    """Return True when elevation is encoded in the object placement (not spline Z values).
+
+    PLAN_LEVEL and SECTION_LEVEL always encode elevation in object placement regardless
+    of whether the curve representation happens to use 2D or 3D coordinates.
+    For other annotation types we fall back to inspecting the geometry.
+    """
+    ptype = ifcopenshell.util.element.get_predefined_type(annotation)
+    if ptype in ("SECTION_LEVEL", "PLAN_LEVEL"):
+        return True
     if not getattr(annotation, "Representation", None):
         return False
     for rep in annotation.Representation.Representations:
@@ -8034,6 +8702,37 @@ def _update_ifc_polyline(
             return
 
 
+def _zero_elevation_annotation_spline_z(annotation: ifcopenshell.entity_instance, obj: bpy.types.Object) -> None:
+    """Flatten all spline-point local Z to 0 for PLAN_LEVEL / SECTION_LEVEL annotations.
+
+    For elevation annotations the elevation is encoded in the object placement (world Z).
+    Spline points are created from camera-space coords and may carry a large local Z
+    offset.  Zeroing it ensures the visible line and the gizmo sit at the same elevation.
+    """
+    if not obj.data or not hasattr(obj.data, "splines"):
+        return
+    changed = False
+    for spline in obj.data.splines:
+        for pt in spline.points:
+            if pt.co.z != 0.0:
+                pt.co = (pt.co.x, pt.co.y, 0.0, pt.co.w)
+                changed = True
+    if not changed or not getattr(annotation, "Representation", None):
+        return
+    for rep in annotation.Representation.Representations:
+        curve = _find_curve_item(rep)
+        if curve is None:
+            continue
+        if curve.is_a("IfcIndexedPolyCurve"):
+            pts_list = curve.Points
+            if not pts_list.is_a("IfcCartesianPointList2D"):
+                pts_list.CoordList = tuple((c[0], c[1], 0.0) for c in pts_list.CoordList)
+        elif curve.is_a("IfcPolyline") and curve.Points:
+            for ifc_pt in curve.Points:
+                if len(ifc_pt.Coordinates) >= 3:
+                    ifc_pt.Coordinates = (ifc_pt.Coordinates[0], ifc_pt.Coordinates[1], 0.0)
+
+
 def _find_curve_item(rep: ifcopenshell.entity_instance) -> Optional[ifcopenshell.entity_instance]:
     """Return the first IfcPolyline or IfcIndexedPolyCurve in a shape representation."""
     for item in rep.Items:
@@ -8057,16 +8756,20 @@ def _find_curve_in_item(item: ifcopenshell.entity_instance) -> Optional[ifcopens
 
 
 class ClickNearestDimensionAnchor(bpy.types.Operator):
-    """LMB fallback: fire SetDimensionAnchor when cursor is within RADIUS pixels of an anchor dot.
+    """Click handler for dimension anchor dots.
 
-    The gizmo handles exact hits; this catches near-misses where the cursor
-    is close to a dot but didn't land inside the gizmo hit shape.
+    When the active dimension's anchor dots are visible, clicking within
+    RADIUS_PX of a dot activates SetDimensionAnchor for that dot.
+
+    Implemented as a two-event modal (PRESS consumed in invoke, RELEASE
+    consumed in modal) so SetDimensionAnchor starts on a clean slate —
+    no stray LMB events reach it that could trigger view3d.select.
     """
 
     bl_idname = "bim.click_nearest_dimension_anchor"
     bl_label = "Click Nearest Dimension Anchor"
 
-    RADIUS_PX = 60
+    RADIUS_PX = 15
 
     def invoke(self, context, event):
         from bpy_extras.view3d_utils import location_3d_to_region_2d
@@ -8074,8 +8777,6 @@ class ClickNearestDimensionAnchor(bpy.types.Operator):
         if not tool.Ifc.get():
             return {"PASS_THROUGH"}
 
-        # Always use the 3D viewport WINDOW region — context.region may be a header,
-        # sidebar, or toolbar depending on where the click landed in the area.
         region = None
         rv3d = None
         for area in context.screen.areas:
@@ -8095,7 +8796,6 @@ class ClickNearestDimensionAnchor(bpy.types.Operator):
         if not region or not rv3d:
             return {"PASS_THROUGH"}
 
-        # Convert absolute mouse position to WINDOW region-local coordinates.
         cx = event.mouse_x - region.x
         cy = event.mouse_y - region.y
 
@@ -8106,8 +8806,6 @@ class ClickNearestDimensionAnchor(bpy.types.Operator):
         best_idx = -1
         best_dist_sq = float("inf")
 
-        # Scan all visible dimension annotations — not just selected ones.
-        # view3d.select may deselect the annotation before this operator runs.
         for obj in context.scene.objects:
             if obj.type != "CURVE":
                 continue
@@ -8122,17 +8820,30 @@ class ClickNearestDimensionAnchor(bpy.types.Operator):
             if not obj.data.splines:
                 continue
 
-            for i, pt in enumerate(obj.data.splines[0].points):
-                world_pos = obj.matrix_world @ pt.co.to_3d()
+            ptype = _ue.get_predefined_type(element)
+            if ptype in ("SECTION_LEVEL", "PLAN_LEVEL"):
+                # Gizmo is drawn at the object origin for elevation annotations.
+                world_pos = obj.matrix_world.translation.copy()
                 sp = location_3d_to_region_2d(region, rv3d, world_pos)
-                if not sp:
-                    continue
-                dx, dy = cx - sp.x, cy - sp.y
-                d2 = dx * dx + dy * dy
-                if d2 < r2 and d2 < best_dist_sq:
-                    best_dist_sq = d2
-                    best_idx = i
-                    best_obj = obj
+                if sp:
+                    dx, dy = cx - sp.x, cy - sp.y
+                    d2 = dx * dx + dy * dy
+                    if d2 < r2 and d2 < best_dist_sq:
+                        best_dist_sq = d2
+                        best_idx = 0
+                        best_obj = obj
+            else:
+                for i, pt in enumerate(obj.data.splines[0].points):
+                    world_pos = obj.matrix_world @ pt.co.to_3d()
+                    sp = location_3d_to_region_2d(region, rv3d, world_pos)
+                    if not sp:
+                        continue
+                    dx, dy = cx - sp.x, cy - sp.y
+                    d2 = dx * dx + dy * dy
+                    if d2 < r2 and d2 < best_dist_sq:
+                        best_dist_sq = d2
+                        best_idx = i
+                        best_obj = obj
 
         if best_obj is None:
             return {"PASS_THROUGH"}
@@ -8141,15 +8852,164 @@ class ClickNearestDimensionAnchor(bpy.types.Operator):
             o.select_set(False)
         best_obj.select_set(True)
         context.view_layer.objects.active = best_obj
-        from bonsai.bim.module.drawing.gizmos import set_active_anchor
-        set_active_anchor(best_idx, best_obj)
-        # Force viewport redraw so gizmo colors update before the modal starts.
+
+        # Store dot for the modal phase and go modal to consume the PRESS.
+        # The modal will also consume the RELEASE before handing off to
+        # SetDimensionAnchor, so view3d.select never sees either event.
+        self._best_obj = best_obj
+        self._best_idx = best_idx
+        context.window_manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event):
+        if event.type == "LEFTMOUSE" and event.value == "RELEASE":
+            # Both PRESS and RELEASE are now consumed.  Start the anchor editor.
+            from bonsai.bim.module.drawing.gizmos import set_active_anchor
+            set_active_anchor(self._best_idx, self._best_obj)
+            for area in context.screen.areas:
+                if area.type == "VIEW_3D":
+                    area.tag_redraw()
+                    break
+            bpy.ops.bim.set_dimension_anchor("INVOKE_DEFAULT", anchor_index=self._best_idx)
+            return {"FINISHED"}
+
+        if event.type in ("ESC", "RIGHTMOUSE"):
+            return {"CANCELLED"}
+
+        # Consume intermediate LMB events; pass everything else through so
+        # viewport navigation (MMB, scroll) still works during the brief wait.
+        if event.type == "LEFTMOUSE":
+            return {"RUNNING_MODAL"}
+        return {"PASS_THROUGH"}
+
+
+class MakeDimensionParametric(bpy.types.Operator, tool.Ifc.Operator):
+    """Convert a dumb (static) dimension to a parametric dimension with free ends.
+
+    Creates a BBIM_Dimension pset on the active annotation with one world-point
+    anchor per spline vertex, matching the current curve positions exactly.
+    The endpoints can then be re-anchored to IFC faces via SetDimensionAnchor.
+    """
+
+    bl_idname = "bim.make_dimension_parametric"
+    bl_label = "Make Dimension Parametric"
+    bl_options = {"REGISTER", "UNDO"}
+
+    _DIM_TYPES = frozenset(("DIMENSION", "RADIUS", "DIAMETER", "ANGLE"))
+    _ELEVATION_TYPES = frozenset(("SECTION_LEVEL", "PLAN_LEVEL"))
+
+    @classmethod
+    def poll(cls, context):
+        if not tool.Ifc.get():
+            cls.poll_message_set("No IFC file loaded.")
+            return False
+        obj = context.active_object
+        if not obj or obj.type != "CURVE":
+            cls.poll_message_set("Active object must be an annotation curve.")
+            return False
+        element = tool.Ifc.get_entity(obj)
+        if not element or not element.is_a("IfcAnnotation"):
+            cls.poll_message_set("Active object must be an IfcAnnotation.")
+            return False
+        ptype = ifcopenshell.util.element.get_predefined_type(element)
+        if ptype not in cls._DIM_TYPES and ptype not in cls._ELEVATION_TYPES:
+            cls.poll_message_set("Annotation must be a dimension or elevation type.")
+            return False
+        pset = ifcopenshell.util.element.get_pset(element, "BBIM_Dimension")
+        if pset and pset.get("Anchors"):
+            cls.poll_message_set("Annotation is already parametric.")
+            return False
+        if ptype in cls._DIM_TYPES and (not obj.data.splines or len(obj.data.splines[0].points) < 2):
+            cls.poll_message_set("Curve has fewer than 2 points.")
+            return False
+        return True
+
+    def _execute(self, context):
+        import ifcopenshell.api.drawing as drawing_api
+
+        obj = context.active_object
+        element = tool.Ifc.get_entity(obj)
+        file = tool.Ifc.get()
+        ptype = ifcopenshell.util.element.get_predefined_type(element)
+
+        if ptype in self._ELEVATION_TYPES:
+            # One free-world anchor at the object origin (the current elevation).
+            world_pos = list(obj.matrix_world.translation)
+            anchors = [drawing_api.make_world_anchor(world_pos)]
+        else:
+            spline = obj.data.splines[0]
+            anchors = [
+                drawing_api.make_world_anchor(list(obj.matrix_world @ pt.co.to_3d()))
+                for pt in spline.points
+            ]
+
+        pset_data = ifcopenshell.util.element.get_pset(element, "BBIM_Dimension")
+        if not pset_data:
+            ifcopenshell.api.run("pset.add_pset", file, product=element, name="BBIM_Dimension")
+            pset_data = ifcopenshell.util.element.get_pset(element, "BBIM_Dimension")
+        pset_entity = file.by_id(pset_data["id"])
+        ifcopenshell.api.run("pset.edit_pset", file, pset=pset_entity, properties={"Anchors": json.dumps(anchors)})
+
+        from bonsai.bim.module.drawing import handler as _drawing_handler
+        _drawing_handler.invalidate_dim_index()
+
         for area in context.screen.areas:
             if area.type == "VIEW_3D":
                 area.tag_redraw()
                 break
-        bpy.ops.bim.set_dimension_anchor("INVOKE_DEFAULT", anchor_index=best_idx)
-        return {"FINISHED"}
+
+        self.report({"INFO"}, f"'{obj.name}' is now parametric with {len(anchors)} free-end anchor(s).")
+
+
+class BakeParametricDimension(bpy.types.Operator, tool.Ifc.Operator):
+    """Convert a parametric dimension to a dumb (static) dimension.
+
+    Removes the BBIM_Dimension pset from the active annotation so the dimension
+    curve is no longer regenerated when referenced elements move.  The current
+    curve geometry is preserved exactly as-is.
+    """
+
+    bl_idname = "bim.bake_parametric_dimension"
+    bl_label = "Bake Parametric Dimension"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        if not tool.Ifc.get():
+            cls.poll_message_set("No IFC file loaded.")
+            return False
+        obj = context.active_object
+        if not obj:
+            cls.poll_message_set("No active object.")
+            return False
+        element = tool.Ifc.get_entity(obj)
+        if not element or not element.is_a("IfcAnnotation"):
+            cls.poll_message_set("Active object must be an IfcAnnotation.")
+            return False
+        pset = ifcopenshell.util.element.get_pset(element, "BBIM_Dimension")
+        if not pset or not pset.get("Anchors"):
+            cls.poll_message_set("Annotation has no parametric dimension data.")
+            return False
+        return True
+
+    def _execute(self, context):
+        obj = context.active_object
+        element = tool.Ifc.get_entity(obj)
+        file = tool.Ifc.get()
+
+        pset_data = ifcopenshell.util.element.get_pset(element, "BBIM_Dimension")
+        pset_entity = file.by_id(pset_data["id"])
+        ifcopenshell.api.pset.remove_pset(file, product=element, pset=pset_entity)
+
+        from bonsai.bim.module.drawing import handler as _drawing_handler
+        _drawing_handler.invalidate_dim_index()
+
+        for area in context.screen.areas:
+            if area.type == "VIEW_3D":
+                area.tag_redraw()
+                break
+
+        self.report({"INFO"}, f"'{obj.name}' converted to a static dimension.")
 
 
 class DebugDimensionClicks(bpy.types.Operator):
