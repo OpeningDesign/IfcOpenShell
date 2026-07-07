@@ -1014,11 +1014,12 @@ class AddWallsFromSlab(bpy.types.Operator, tool.Ifc.Operator):
                 "Please select a slab.",
             )
             return {"FINISHED"}
-        walls = DumbWallGenerator(self.relating_type).generate("SLAB")
+        wall_groups = DumbWallGenerator(self.relating_type).generate("SLAB")
 
-        if walls:
-            for wall1, wall2 in zip(walls, walls[1:] + [walls[0]]):
-                DumbWallJoiner().connect(wall2["obj"], wall1["obj"])
+        if wall_groups:
+            for walls in wall_groups:
+                for wall1, wall2 in zip(walls, walls[1:] + [walls[0]]):
+                    DumbWallJoiner().connect(wall2["obj"], wall1["obj"])
 
 
 class DrawPolylineWall(bpy.types.Operator, PolylineOperator, tool.Ifc.Operator):
@@ -1245,6 +1246,9 @@ class DumbWallAligner:
 
 
 class DumbWallGenerator:
+    SLAB_ARC_RESOLUTION = 24
+    SLAB_POINT_MERGE_TOLERANCE = 1e-6
+
     def __init__(self, relating_type):
         self.relating_type = relating_type
         self.unit_scale = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
@@ -1299,6 +1303,96 @@ class DumbWallGenerator:
             walls.append(self.create_wall_from_2_points(coords))
         return walls, is_polyline_closed
 
+    def _curve_has_arc_segments(self, curve: ifcopenshell.entity_instance) -> bool:
+        """Detect whether an IfcIndexedPolyCurve perimeter includes arc segments."""
+        if not curve.is_a("IfcIndexedPolyCurve"):
+            return False
+        segments = getattr(curve, "Segments", None) or ()
+        for segment in segments:
+            # Different schema wrappers expose segment typing either as entities
+            # (IfcArcIndex / IfcLineIndex) or as index tuples.
+            if hasattr(segment, "is_a"):
+                if segment.is_a("IfcArcIndex"):
+                    return True
+                continue
+            if len(segment[0]) == 3:
+                return True
+        return False
+
+    def _world_xy_point(self, slab_obj: bpy.types.Object, elevation: float, ifc_coord: Any) -> Vector:
+        return slab_obj.matrix_world @ Vector(
+            (ifc_coord[0] * self.unit_scale, ifc_coord[1] * self.unit_scale, elevation)
+        )
+
+    def _derive_points_from_arc_segments(
+        self, slab_obj: bpy.types.Object, elevation: float, curve: ifcopenshell.entity_instance
+    ) -> list[Vector]:
+        """Return world-space perimeter points for an indexed curve with arc segments."""
+        points: list[Vector] = []
+        coord_list = curve.Points.CoordList
+        arc_resolution = self.SLAB_ARC_RESOLUTION
+        precision = self.SLAB_POINT_MERGE_TOLERANCE
+
+        def append_point(point: Vector) -> None:
+            if points and (points[-1] - point).length < precision:
+                return
+            points.append(point)
+
+        for segment in curve.Segments:
+            segment_indices = [i - 1 for i in segment[0]]
+            if len(segment_indices) == 3:
+                p1 = self._world_xy_point(slab_obj, elevation, coord_list[segment_indices[0]])
+                p2 = self._world_xy_point(slab_obj, elevation, coord_list[segment_indices[1]])
+                p3 = self._world_xy_point(slab_obj, elevation, coord_list[segment_indices[2]])
+                # create_arc_segments returns (sampled_points, sampled_edges);
+                # only sampled_points are needed for wall generation.
+                sampled_arc_points, _ = tool.Cad.create_arc_segments([p1, p2, p3], num_verts=arc_resolution + 1)
+                sampled_arc_points = [Vector(arc_point) for arc_point in sampled_arc_points]
+                # Cad.create_arc_segments may return samples from end->start for a
+                # [start, through, end] input, so normalize to start->end to keep
+                # perimeter traversal contiguous with neighboring line segments.
+                if sampled_arc_points and (sampled_arc_points[0] - p1).length > (sampled_arc_points[-1] - p1).length:
+                    sampled_arc_points.reverse()
+                for arc_point in sampled_arc_points:
+                    append_point(arc_point)
+            elif len(segment_indices) >= 2:
+                for segment_index in segment_indices:
+                    append_point(self._world_xy_point(slab_obj, elevation, coord_list[segment_index]))
+
+        if points and (points[0] - points[-1]).length >= precision:
+            points.append(points[0].copy())
+        return points
+
+    def _derive_points_from_circle(
+        self, slab_obj: bpy.types.Object, elevation: float, circle: ifcopenshell.entity_instance
+    ) -> list[Vector]:
+        """Return world-space perimeter points for an IfcCircle perimeter."""
+        points: list[Vector] = []
+        arc_resolution = self.SLAB_ARC_RESOLUTION
+        precision = self.SLAB_POINT_MERGE_TOLERANCE
+        radius = circle.Radius * self.unit_scale
+
+        circle_position = Matrix.Identity(4)
+        if getattr(circle, "Position", None):
+            circle_position = Matrix(ifcopenshell.util.placement.get_axis2placement(circle.Position).tolist())
+            circle_position.translation *= self.unit_scale
+
+        def append_point(point: Vector) -> None:
+            if points and (points[-1] - point).length < precision:
+                return
+            points.append(point)
+
+        for i in range(arc_resolution):
+            theta = (2 * math.pi * i) / arc_resolution
+            local_point = Vector((radius * math.cos(theta), radius * math.sin(theta), 0.0))
+            world_point = slab_obj.matrix_world @ circle_position @ local_point
+            world_point.z = elevation
+            append_point(world_point)
+
+        if points:
+            points.append(points[0].copy())
+        return points
+
     def derive_from_slab(self):
         slab_obj = bpy.context.active_object
         slab = tool.Ifc.get_entity(slab_obj)
@@ -1307,19 +1401,37 @@ class DumbWallGenerator:
         elevation = self.container_obj.location.z
         representation = ifcopenshell.util.representation.get_representation(slab, "Model", "Body", "MODEL_VIEW")
         extrusion = tool.Model.get_extrusion(representation)
-        builder = ifcopenshell.util.shape_builder.ShapeBuilder(tool.Ifc.get())
-        polyline_points = builder.get_polyline_coords(extrusion.SweptArea.OuterCurve)
-        polyline_points = [[(v * self.unit_scale) for v in p] for p in polyline_points]
-        polyline_points = [slab_obj.matrix_world @ Vector((p[0], p[1], elevation)) for p in polyline_points]
-        if not tool.Cad.is_counter_clockwise_order(polyline_points[0], polyline_points[1], polyline_points[2]):
-            polyline_points = polyline_points[::-1]
-        walls = []
-        for i in range(len(polyline_points) - 1):
-            vec1 = polyline_points[i]
-            vec2 = polyline_points[i + 1]
-            coords = (vec1, vec2)
-            walls.append(self.create_wall_from_2_points(coords))
-        return walls
+        swept_area = extrusion.SweptArea
+        if swept_area.is_a("IfcCompositeProfileDef"):
+            profiles = swept_area.Profiles
+        else:
+            profiles = [swept_area]
+        wall_groups = []
+        for profile in profiles:
+            outer_curve = profile.OuterCurve
+            if self._curve_has_arc_segments(outer_curve):
+                polyline_points = self._derive_points_from_arc_segments(slab_obj, elevation, outer_curve)
+            elif outer_curve.is_a("IfcCircle"):
+                polyline_points = self._derive_points_from_circle(slab_obj, elevation, outer_curve)
+            else:
+                builder = ifcopenshell.util.shape_builder.ShapeBuilder(tool.Ifc.get())
+                polyline_points = builder.get_polyline_coords(outer_curve)
+                polyline_points = [[(v * self.unit_scale) for v in p] for p in polyline_points]
+                polyline_points = [slab_obj.matrix_world @ Vector((p[0], p[1], elevation)) for p in polyline_points]
+
+            if len(polyline_points) < 3:
+                continue
+            if not tool.Cad.is_counter_clockwise_order(polyline_points[0], polyline_points[1], polyline_points[2]):
+                polyline_points = polyline_points[::-1]
+            loop_walls = []
+            for i in range(len(polyline_points) - 1):
+                vec1 = polyline_points[i]
+                vec2 = polyline_points[i + 1]
+                coords = (vec1, vec2)
+                loop_walls.append(self.create_wall_from_2_points(coords))
+            if loop_walls:
+                wall_groups.append(loop_walls)
+        return wall_groups
 
     def create_wall_from_2_points(self, coords, should_round=False) -> Union[dict[str, Any], None]:
         direction = coords[1] - coords[0]
