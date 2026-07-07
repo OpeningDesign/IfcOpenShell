@@ -391,8 +391,18 @@ class Usecase:
                 if value is None or self.is_empty_numeric_value(value, primary_measure_type):
                     nominal_value = None
                 else:
-                    value = self.cast_value_to_primary_measure_type(value, primary_measure_type)
-                    nominal_value = self.file.create_entity(primary_measure_type, value)
+                    try:
+                        cast_value = self.cast_value_to_primary_measure_type(value, primary_measure_type)
+                        nominal_value = self.file.create_entity(primary_measure_type, cast_value)
+                    except ValueError:
+                        if value == "":
+                            # An empty string is not a meaningful value for a
+                            # numeric or boolean measure (e.g. an unfilled bSDD
+                            # property), so store the property without a nominal
+                            # value instead of crashing on float("").
+                            nominal_value = None
+                        else:
+                            raise
                 args = {"Name": name, "NominalValue": nominal_value}
                 if unit:
                     args["Unit"] = unit
