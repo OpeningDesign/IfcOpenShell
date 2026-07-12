@@ -42,7 +42,7 @@ import ifcopenshell.util.unit
 
 filter_elements_grammar = lark.Lark(
     """start: filter_group
-    filter_group: facet_list ("+" facet_list)*
+    filter_group: facet_list ("+" facet_list)* "+"?
     facet_list: facet ("," facet)*
 
     facet: instance | entity | attribute | type | material | query | classification | location | property | group | parent
@@ -110,8 +110,10 @@ filter_elements_grammar = lark.Lark(
     CR : /\\r/
     LF : /\\n/
     NEWLINE: (CR? LF)+
+    COMMENT: "/*" /.*?/s "*/"
 
     %ignore WS // Disregard spaces in text
+    %ignore COMMENT // Allow /* ... */ block comments to toggle parts of a query
 """
 )
 
