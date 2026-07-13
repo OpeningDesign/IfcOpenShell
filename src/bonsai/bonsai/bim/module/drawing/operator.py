@@ -3275,6 +3275,10 @@ class ActivateDrawingBase(tool.Ifc.Operator):
                 context.view_layer.objects.active = active_camera
             return {"FINISHED"}
 
+        if not self.drawing:
+            self.report({"WARNING"}, "No drawing is associated with this sheet item.")
+            return {"CANCELLED"}
+
         drawing = tool.Ifc.get().by_id(self.drawing)
         dprops = tool.Drawing.get_document_props()
 
@@ -3400,6 +3404,22 @@ class ActivateDrawingFromSheet(bpy.types.Operator, ActivateDrawingBase):
             cls.poll_message_set("No drawing selected.")
             return False
         return True
+
+    def invoke(self, context, event) -> set["rna_enums.OperatorReturnItems"]:
+        # Resolve the drawing from the active sheet item here (once per click) rather than in the
+        # panel's draw(), which previously scanned every IfcAnnotation on each redraw and caused lag.
+        active_sheet = tool.Drawing.get_active_sheet_item(reference_type="DRAWING")
+        if active_sheet:
+            drawing_name = active_sheet.name.split(".svg")[0]
+            for annotation in tool.Ifc.get().by_type("IfcAnnotation"):
+                if annotation.ObjectType != "DRAWING":
+                    continue
+                if annotation.Name and annotation.Name.replace(",", "") == drawing_name:
+                    self.drawing = annotation.id()
+                    break
+        # Call the base invoke explicitly: in the MRO bpy.types.Operator precedes ActivateDrawingBase,
+        # so super().invoke could bypass the base's modifier-key handling.
+        return ActivateDrawingBase.invoke(self, context, event)
 
 
 class RemoveDrawing(bpy.types.Operator, tool.Ifc.Operator):
