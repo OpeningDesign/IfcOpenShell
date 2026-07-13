@@ -1894,15 +1894,6 @@ class Drawing(bonsai.core.tool.Drawing):
         im = camera.matrix_world.inverted()
         v1, v2 = [im @ Vector((m @ np.append(v, 1.0))[:3]) for v in [v1, v2]]
 
-        # Orient the cut line so the section's view direction lies on the marker
-        # side. The SVG section marker always points to the same perpendicular
-        # side of the line, so ordering the endpoints by local X alone makes the
-        # marker point the wrong way for sections whose frame is flipped. See #4103.
-        view_dir = im.to_3x3() @ Vector(-m[:3, 2])
-        edge_dir = v2 - v1
-        if edge_dir.x * view_dir.y - edge_dir.y * view_dir.x < 0:
-            v1, v2 = v2, v1
-
         target_view = cls.get_drawing_target_view(drawing)
         bounds = helper.ortho_view_frame(camera.data)
 
@@ -1922,6 +1913,22 @@ class Drawing(bonsai.core.tool.Drawing):
                 return
         else:
             return
+
+        # Orient the cut line so the section's view direction lies on the marker side.
+        # The SVG marker is always drawn on the +90 CCW side of the start->end edge, so
+        # the endpoints must be ordered to put the view direction on that side. This runs
+        # AFTER clip/elevate on purpose: elevate_segment (section/elevation views) rebuilds
+        # the segment in a fixed ymin->ymax order and discards any upstream ordering, and
+        # for a vertical section line the pre-clip edge is along camera Z so the X-Y signed
+        # area is degenerate (0). Testing the FINAL projected edge is non-degenerate for
+        # every target view, and clip_segment preserves direction so plan views are
+        # unchanged from the original #4103 fix. See #4103.
+        view_dir = im.to_3x3() @ Vector(-m[:3, 2])
+        edge_dir = points[1] - points[0]
+        cross = edge_dir.x * view_dir.y - edge_dir.y * view_dir.x
+        if cross < 0:
+            # Reassign (not item-assign): clip_segment returns a tuple, elevate a list.
+            points = [points[1], points[0]]
 
         return points
 
@@ -1987,6 +1994,24 @@ class Drawing(bonsai.core.tool.Drawing):
                     new_points = (v1, v2)
                 else:
                     new_points = points
+
+        # Enforce the corrected marker orientation. generate_section_reference_points now
+        # orders `points` so the marker faces the section view direction. The collinear
+        # "no change" path above would otherwise preserve the stored (possibly reversed)
+        # order, leaving pre-#4103 annotations pointing the wrong way, so reverse when the
+        # stored/candidate order faces opposite the corrected direction. See #4103.
+        corrected_dir = points[1] - points[0]
+        if new_points is None:
+            if len(existing_verts) == 2 and (existing_verts[1] - existing_verts[0]).dot(corrected_dir) < 0:
+                new_points = (existing_verts[1], existing_verts[0])
+        elif (new_points[1] - new_points[0]).dot(corrected_dir) < 0:
+            new_points = (new_points[1], new_points[0])
+
+        # If the final order reverses the previously stored verts, swap the border-offset
+        # auto positions so update_section_endpoints keeps tracking the correct ends.
+        if new_points and len(existing_verts) == 2:
+            if (new_points[1] - new_points[0]).dot(existing_verts[1] - existing_verts[0]) < 0:
+                cls._swap_section_auto_positions(annotation)
 
         if new_points:
             if representation := ifcopenshell.util.representation.get_representation(annotation, context):
@@ -3239,6 +3264,26 @@ class Drawing(bonsai.core.tool.Drawing):
         )
         bpy.ops.bim.update_representation(obj=obj.name, ifc_representation_class="")
         print(f"[SECTION] done. stored auto_v0={cls._format_vector3(stored_v0)}, auto_v1={cls._format_vector3(stored_v1)}")
+
+    @classmethod
+    def _swap_section_auto_positions(cls, element: ifcopenshell.entity_instance) -> None:
+        """Swap AutoStartPosition/AutoEndPosition in BBIM_Section.
+
+        Called when a section line's endpoints are reversed (to correct marker
+        orientation) so the border-offset auto-tracking in update_section_endpoints
+        keeps matching the right ends. See #4103.
+        """
+        pset_data = ifcopenshell.util.element.get_pset(element, "BBIM_Section") or {}
+        start = pset_data.get("AutoStartPosition")
+        end = pset_data.get("AutoEndPosition")
+        pset_id = pset_data.get("id")
+        if not pset_id or (not start and not end):
+            return
+        ifcopenshell.api.pset.edit_pset(
+            tool.Ifc.get(),
+            pset=tool.Ifc.get().by_id(pset_id),
+            properties={"AutoStartPosition": end or "", "AutoEndPosition": start or ""},
+        )
 
     @staticmethod
     def _parse_vector3(s: str) -> Optional[Vector]:
