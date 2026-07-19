@@ -233,6 +233,9 @@ class AnnotationToolUI:
         obj = bpy.context.active_object
         if tool.Ifc.get_entity(obj) and DecoratorData.get_text_data(obj):
             add_layout_hotkey_operator(cls.layout, "Edit Text", "S_E", "")
+        if bpy.ops.bim.copy_annotation_to_drawing.poll():
+            row = cls.layout.row(align=True)
+            row.operator("bim.copy_annotation_to_drawing", icon="PASTEDOWN", text="Copy To Drawing")
 
         obj = context.active_object
         element = tool.Ifc.get_entity(obj) if obj else None

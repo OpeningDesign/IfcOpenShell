@@ -50,6 +50,7 @@ classes = (
     operator.CleanWireframes,
     operator.ContractSheet,
     operator.ConvertSVGToDXF,
+    operator.CopyAnnotationToDrawing,
     operator.CopyTextToSelection,
     operator.CreateDrawing,
     operator.CreateSheets,
