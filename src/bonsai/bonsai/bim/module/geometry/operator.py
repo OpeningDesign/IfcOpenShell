@@ -4270,7 +4270,7 @@ class OverrideMoveSelect(bpy.types.Operator):
         if array_parents_to_move:
             for parent_obj in array_parents_to_move:
                 parent_element = tool.Ifc.get_entity(parent_obj)
-                for array_obj in tool.Blender.Modifier.Array.get_all_objects(parent_element):
+                for array_obj in tool.Array.get_all_objects(parent_element):
                     array_obj.select_set(True)
                 self.new_active_obj = parent_obj
             return {"FINISHED"}
