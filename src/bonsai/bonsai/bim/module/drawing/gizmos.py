@@ -2598,6 +2598,12 @@ class ExtrusionWidget(types.GizmoGroup):
         gz.scale_value = scale_value
 
     def refresh(self, context: bpy.types.Context) -> None:
+        # setup() bails early (and never creates self.handle/self.guides) when
+        # context.object is missing or not a mesh; Blender can still call refresh()
+        # afterwards, e.g. while another gizmo group's modal shuffles the active
+        # object. Guard against the incomplete-setup case.
+        if not hasattr(self, "handle"):
+            return
         target = context.active_object
         if not target:
             return
@@ -2606,6 +2612,8 @@ class ExtrusionWidget(types.GizmoGroup):
         self.guides.matrix_basis = basis
 
     def update(self, context: bpy.types.Context) -> None:
+        if not hasattr(self, "handle"):
+            return
         bpy.ops.bim.update_parametric_representation()
         target = context.active_object
         if not target:
@@ -2618,6 +2626,29 @@ class ExtrusionWidget(types.GizmoGroup):
             return
         self.handle.target_set_prop("offset", prop, "value")
         self.guides.target_set_prop("depth", prop, "value")
+
+    @staticmethod
+    def get_scale_value(system: str, length_unit: str) -> float:
+        scale_value = 1
+        if system == "METRIC":
+            if length_unit == "KILOMETERS":
+                scale_value /= 1000
+            elif length_unit == "CENTIMETERS":
+                scale_value *= 100
+            elif length_unit == "MILLIMETERS":
+                scale_value *= 1000
+            elif length_unit == "MICROMETERS":
+                scale_value *= 1000000
+        elif system == "IMPERIAL":
+            if length_unit == "MILES":
+                scale_value /= si_conversions["mile"]
+            elif length_unit == "FEET":
+                scale_value /= si_conversions["foot"]
+            elif length_unit == "INCHES":
+                scale_value /= si_conversions["inch"]
+            elif length_unit == "THOU":
+                scale_value /= si_conversions["thou"]
+        return scale_value
 
 
 class GizmoAnchorHandle(bpy.types.Gizmo):
@@ -2961,29 +2992,6 @@ class DimensionLinePositionWidget(types.GizmoGroup):
         self.gz_rev.matrix_basis = self._basis(rev_origin, -od)
         self.gz_rev.axis = od.copy()
         self.gz_rev.hide = False
-
-    @staticmethod
-    def get_scale_value(system: str, length_unit: str) -> float:
-        scale_value = 1
-        if system == "METRIC":
-            if length_unit == "KILOMETERS":
-                scale_value /= 1000
-            elif length_unit == "CENTIMETERS":
-                scale_value *= 100
-            elif length_unit == "MILLIMETERS":
-                scale_value *= 1000
-            elif length_unit == "MICROMETERS":
-                scale_value *= 1000000
-        elif system == "IMPERIAL":
-            if length_unit == "MILES":
-                scale_value /= si_conversions["mile"]
-            elif length_unit == "FEET":
-                scale_value /= si_conversions["foot"]
-            elif length_unit == "INCHES":
-                scale_value /= si_conversions["inch"]
-            elif length_unit == "THOU":
-                scale_value /= si_conversions["thou"]
-        return scale_value
 
 
 # ============================================================================
