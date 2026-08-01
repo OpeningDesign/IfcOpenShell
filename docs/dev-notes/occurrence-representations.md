@@ -49,14 +49,25 @@ make occurrence-local reps a first-class, persisted thing.
 ### Promote to Type (slot-based, "type wins")
 
 `bim.promote_representation_to_type` (`EXPORT` icon on Occurrence rows, only when
-`element_has_type`) → `core.geometry.promote_representation_to_type`. Copies the local rep onto
-the type as a new `RepresentationMap` (`tool.Geometry.add_type_representation_map`), then for
-**every** occurrence of the type: removes any local (non-mapped) rep in the same **slot** and
-assigns the type's mapped rep in its place. Occurrences with no local rep in the slot simply
-inherit the mapped rep.
+`element_has_type`) → `core.geometry.promote_representation_to_type`. Copies the promoted rep
+onto the type as a new `RepresentationMap` (`tool.Geometry.add_type_representation_map`), then for
+**every** occurrence of the type: removes **any** existing rep in the same **slot** and assigns
+the type's mapped rep in its place. Occurrences with no rep in the slot simply inherit it.
+
+"Any existing rep" is the load-bearing part: it covers a **local** (non-mapped) rep *and* an
+already-**mapped** rep the occurrence inherited from another map — e.g. a floating
+`IfcRepresentationMap` not anchored to the type, which Revit emits (each occurrence maps to its
+own or a shared floating map, the type's `RepresentationMaps` is empty). Local reps are removed
+via `core.remove_representation` (Blender-aware); mapped reps via a per-occurrence
+`geometry.unassign_representation` + `geometry.remove_representation` (its `remove_deep2` keeps a
+shared map alive until its last user is gone, so floating maps get garbage-collected). If the
+type already holds a rep in the slot it is removed too, so promoting is idempotent (replaces
+rather than accumulating maps). The slot key resolves through mapped items
+(`resolve_mapped_representation`), because an inherited rep's own `RepresentationType` is
+`"MappedRepresentation"`, not the underlying type.
 
 The slot key is context (context/subcontext/target view) + `RepresentationIdentifier` +
-`RepresentationType`. **Geometry is not compared** — the type's representation replaces the
+resolved `RepresentationType`. **Geometry is not compared** — the type's representation replaces the
 occurrence's for that slot even when the occurrence's geometry genuinely differs (e.g. an
 independently meshed / mirrored / rotated Revit instance), so such occurrences visibly adopt the
 type's geometry. The mapped rep uses `map_representation`'s identity transform, so a divergent
