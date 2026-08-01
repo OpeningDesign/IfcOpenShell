@@ -205,38 +205,47 @@ def promote_representation_to_type(
     obj: bpy.types.Object,
     representation: ifcopenshell.entity_instance,
 ) -> dict[str, int]:
-    """Move an occurrence-local representation onto its type.
+    """Move an occurrence-local representation onto its type (slot-based, type wins).
 
-    The representation is copied onto the type as a mapped representation so
-    that occurrences can inherit it. For every occurrence of the type, in the
-    same context:
+    The representation is copied onto the type as a mapped representation. Then,
+    for every occurrence of the type, any local (non-mapped) representation in
+    the *same slot* — same context (context/subcontext/target view), same
+    ``RepresentationIdentifier`` and same ``RepresentationType`` — is removed and
+    the type's mapped representation is assigned in its place. Occurrences with
+    no matching local representation simply inherit the mapped one.
 
-    - an occurrence with a geometrically identical local representation has it
-      removed and inherits the type's mapped representation instead;
-    - an occurrence with a divergent local representation keeps its own and is
-      left untouched (it continues to override the type);
-    - an occurrence with no local representation in that context inherits the
-      type's mapped representation.
+    Geometry is NOT compared: the type's representation replaces the
+    occurrence's for that slot, even when the occurrence's geometry differs
+    (e.g. an independently meshed / mirrored / rotated instance) — such
+    occurrences visibly adopt the type's geometry. Callers wanting to preserve
+    genuinely divergent instances should not use this operation on them.
 
-    :return: counts dict with ``removed`` (identical locals consolidated) and
-        ``kept`` (divergent overrides preserved).
+    :return: counts dict with ``replaced`` (local reps removed) and
+        ``occurrences`` (occurrences that now reference the type's mapped rep).
     """
     element = ifc.get_entity(obj)
     assert element
     element_type = geometry.get_element_type(element)
     assert element_type, "Cannot promote a representation without a type."
     context = representation.ContextOfItems
+    identifier = representation.RepresentationIdentifier
+    rep_type = representation.RepresentationType
 
-    # Snapshot each occurrence's local (non-mapped) reps in this context before
-    # we add the type-mapped rep (which would otherwise match the filter).
+    def _in_slot(r: ifcopenshell.entity_instance) -> bool:
+        return (
+            r.ContextOfItems == context
+            and not geometry.is_mapped_representation(r)
+            and r.RepresentationIdentifier == identifier
+            and r.RepresentationType == rep_type
+        )
+
+    # Snapshot each occurrence's local reps in this slot before we add the
+    # type-mapped rep (which would otherwise match, minus the is_mapped guard).
     occurrence_local_reps: dict[ifcopenshell.entity_instance, list[ifcopenshell.entity_instance]] = {}
     for occurrence in geometry.get_elements_of_type(element_type):
-        locals_in_context = [
-            r
-            for r in geometry.get_representations_iter(occurrence)
-            if r.ContextOfItems == context and not geometry.is_mapped_representation(r)
+        occurrence_local_reps[occurrence] = [
+            r for r in geometry.get_representations_iter(occurrence) if _in_slot(r)
         ]
-        occurrence_local_reps[occurrence] = locals_in_context
 
     # Copy onto the type as an independent representation map. A copy is used so
     # removing a source occurrence's local rep below can't delete the type's
@@ -244,28 +253,17 @@ def promote_representation_to_type(
     type_representation = geometry.copy_representation_deep(representation)
     geometry.add_type_representation_map(element_type, type_representation)
 
-    # Compare against the type copy, not the original: the original is removed
-    # mid-loop when the source occurrence is processed, and the copy is its
-    # geometric twin.
-    counts = {"removed": 0, "kept": 0}
-    for occurrence, locals_in_context in occurrence_local_reps.items():
-        divergent = [
-            r for r in locals_in_context if not geometry.representations_are_identical(r, type_representation)
-        ]
-        if divergent:
-            # Custom override -> leave the occurrence exactly as it was: keep its
-            # local rep(s) and do not map the type's representation onto it.
-            counts["kept"] += len(divergent)
-            continue
-
+    counts = {"replaced": 0, "occurrences": 0}
+    for occurrence, locals_in_slot in occurrence_local_reps.items():
         occurrence_obj = ifc.get_object(occurrence)
-        # Remove any identical local reps, then inherit from the type.
-        for identical_rep in locals_in_context:
+        # Remove any local rep in this slot, then assign the type's mapped rep.
+        for local_rep in locals_in_slot:
             if occurrence_obj:
-                remove_representation(ifc, geometry, obj=occurrence_obj, representation=identical_rep)
-            counts["removed"] += 1
+                remove_representation(ifc, geometry, obj=occurrence_obj, representation=local_rep)
+            counts["replaced"] += 1
         mapped_representation = ifc.run("geometry.map_representation", representation=type_representation)
         ifc.run("geometry.assign_representation", product=occurrence, representation=mapped_representation)
+        counts["occurrences"] += 1
 
     return counts
 

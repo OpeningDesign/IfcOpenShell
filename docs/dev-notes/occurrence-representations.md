@@ -46,23 +46,28 @@ make occurrence-local reps a first-class, persisted thing.
 
 ## Design
 
-### Promote to Type
+### Promote to Type (slot-based, "type wins")
 
 `bim.promote_representation_to_type` (`EXPORT` icon on Occurrence rows, only when
 `element_has_type`) → `core.geometry.promote_representation_to_type`. Copies the local rep onto
 the type as a new `RepresentationMap` (`tool.Geometry.add_type_representation_map`), then for
-each occurrence of the type in the same context:
+**every** occurrence of the type: removes any local (non-mapped) rep in the same **slot** and
+assigns the type's mapped rep in its place. Occurrences with no local rep in the slot simply
+inherit the mapped rep.
 
-- **identical** local rep → removed (`core.remove_representation`), occurrence inherits the
-  type's mapped rep (`map_representation` + `assign_representation`, which does *not* redirect
-  because the rep is now a `MappedRepresentation`);
-- **divergent** local rep → left untouched (kept as-is);
-- **no** local rep → inherits the mapped rep.
+The slot key is context (context/subcontext/target view) + `RepresentationIdentifier` +
+`RepresentationType`. **Geometry is not compared** — the type's representation replaces the
+occurrence's for that slot even when the occurrence's geometry genuinely differs (e.g. an
+independently meshed / mirrored / rotated Revit instance), so such occurrences visibly adopt the
+type's geometry. The mapped rep uses `map_representation`'s identity transform, so a divergent
+instance takes the type geometry at *its own placement* (baked per-instance mesh orientation is
+lost — the accepted tradeoff of "type wins").
 
-"Identical" = `tool.Geometry.representations_are_identical`: canonical serialization ignoring
-STEP ids and the shared context; styles (inverse `IfcStyledItem`) are not compared. Compared
-against the **type copy**, not the original — the original is removed mid-loop when the source
-occurrence is processed.
+Rationale for dropping the earlier geometry comparison: for Revit-style imports each occurrence
+carries an independently tessellated body (same vertex count but reordered + reoriented; no
+single affine maps one to another, confirmed via a least-squares fit — `max_err ≈ 1.3 m`), so an
+"only consolidate byte-identical" rule left most real-world duplicates unconsolidated. Slot-based
+replace is the deliberate, user-chosen behaviour.
 
 ### Panel split
 
@@ -72,22 +77,22 @@ occurrence is processed.
 `select_by_representation_type` button; the Occurrence-group rows additionally show the promote
 button. A type element shows a flat list.
 
-## The unresolved case (needs a maintainer decision)
+## The divergent-occurrence case (decision made)
 
-Two occurrences of one type that legitimately need **different** geometry in the same context
-**cannot both push to the shared type** (one mapped rep per context). Promote encodes the only
-physical resolution — identical → push, divergent → keep — so the tooling *is* the open
-question: either those occurrences should be **distinct types**, or an occurrence-level
-override must be **permitted to exist**. Intrinsic per-instance geometry (voids/joins;
-`IfcRelVoidsElement` is occurrence-only) is the concrete reason the strict "never diverge" rule
-can't be absolute. Pending Moult's answer on #8788.
+Two occurrences of one type that carry **different** geometry in the same slot cannot both live
+on the type (one mapped rep per slot). The chosen resolution is **"type wins"**: promote
+replaces every occurrence's local rep in that slot with the type's, discarding divergent
+per-instance geometry. This favours a single authoritative type geometry over preserving
+independently-authored instance bodies. (Intrinsic per-instance geometry — voids/joins;
+`IfcRelVoidsElement` is occurrence-only — lives in a *different* mechanism and is unaffected.)
+The broader "can occurrences ever legitimately diverge" question is still worth raising with
+Moult on #8788, but Promote no longer tries to adjudicate it.
 
-## Status — implemented (Promote + panel verified in live Blender before the re-scope)
+## Status — implemented (verified in live Blender)
 
-- `tool/geometry.py`: `copy_representation_deep`, `add_type_representation_map`,
-  `representations_are_identical`.
-- `core/geometry.py`: `promote_representation_to_type`.
-- `core/tool.py`: interface decls for the three new `Geometry` methods.
+- `tool/geometry.py`: `copy_representation_deep`, `add_type_representation_map`.
+- `core/geometry.py`: `promote_representation_to_type` (slot-based).
+- `core/tool.py`: interface decls for the two new `Geometry` methods.
 - `bim/module/geometry/operator.py`: `PromoteRepresentationToType`.
 - `bim/module/geometry/{data,ui}.py`: `is_mapped` / `element_is_type` / `element_has_type`;
   Type/Occurrence grouping merged with the stack's panel columns; old `*` suffix removed.
@@ -105,12 +110,14 @@ toggle removed.
 
 ## Things to test / verify
 
-- Promote: identical siblings consolidate (and drawings still show the plan); a **divergent**
-  sibling keeps its own geometry and does *not* pick up the type's; the source occurrence ends
-  with only the mapped rep; exercises `remove_representation`'s Blender mesh/data-link side
-  effects.
-- `representations_are_identical` on real authored geometry (float exactness): separately
-  authored "same" plans may compare unequal → treated as divergent (safe direction, no delete).
+- Promote (verified on a Revit sink type, 5 occurrences): every occurrence ends up referencing
+  the type's mapped rep — occurrences with a local body in the slot have it replaced (including
+  independently-meshed/mirrored ones, which visibly adopt the type geometry), and occurrences
+  with none inherit it. Exercises `remove_representation`'s Blender mesh/data-link side effects.
+- Promoting a second slot (e.g. Body/PLAN_VIEW/Curve3D) adds a second `RepresentationMap` and all
+  occurrences inherit both.
+- Re-open the saved IFC and confirm the mapped instances render sensibly (the divergent ones will
+  have changed orientation — that's the accepted "type wins" tradeoff, not a bug).
 - Panel: Type vs Occurrence grouping correct for occurrence, typed occurrence with no local
   reps (only Type header), typeless element (only Occurrence), and a type element (flat list);
   columns still align with the stack's header row.

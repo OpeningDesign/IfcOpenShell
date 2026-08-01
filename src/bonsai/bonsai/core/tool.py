@@ -466,7 +466,6 @@ class Geometry:
     def copy_data_links(cls, data, copied_entities) -> None: pass
     def copy_representation_deep(cls, representation): pass
     def add_type_representation_map(cls, element_type, representation): pass
-    def representations_are_identical(cls, a, b): pass
     def delete_data(cls, data): pass
     def delete_ifc_object(cls, obj): pass
     def delete_opening_object_placement(cls, opening): pass

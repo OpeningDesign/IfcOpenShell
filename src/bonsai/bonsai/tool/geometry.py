@@ -921,30 +921,6 @@ class Geometry(bonsai.core.tool.Geometry):
         return rep_map
 
     @classmethod
-    def representations_are_identical(
-        cls, a: ifcopenshell.entity_instance, b: ifcopenshell.entity_instance
-    ) -> bool:
-        """True if two representations have identical geometry, ignoring entity
-        identity (STEP ids) and their shared geometric context. Styles, which
-        attach via inverse ``IfcStyledItem``, are not part of this comparison."""
-
-        def canon(inst: Any, seen: frozenset[int]) -> Any:
-            if isinstance(inst, ifcopenshell.entity_instance):
-                if inst.is_a("IfcRepresentationContext"):
-                    return ("<context>",)
-                eid = inst.id()
-                if eid and eid in seen:
-                    return ("<cycle>", inst.is_a())
-                if eid:
-                    seen = seen | {eid}
-                return (inst.is_a(), tuple(canon(inst[i], seen) for i in range(len(inst))))
-            if isinstance(inst, (list, tuple)):
-                return tuple(canon(x, seen) for x in inst)
-            return inst
-
-        return canon(a, frozenset()) == canon(b, frozenset())
-
-    @classmethod
     def get_cartesian_point_offset(cls, obj: bpy.types.Object) -> npt.NDArray[np.float64] | None:
         props = tool.Blender.get_object_bim_props(obj)
         if props.blender_offset_type == "CARTESIAN_POINT" and props.cartesian_point_offset:

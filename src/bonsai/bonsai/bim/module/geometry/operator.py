@@ -587,8 +587,8 @@ class PromoteRepresentationToType(bpy.types.Operator, tool.Ifc.Operator):
         self.report(
             {"INFO"},
             "Representation promoted to type. "
-            f"{counts['removed']} occurrence representation(s) consolidated, "
-            f"{counts['kept']} divergent override(s) kept.",
+            f"{counts['occurrences']} occurrence(s) now inherit it "
+            f"({counts['replaced']} local representation(s) replaced).",
         )
 
 
