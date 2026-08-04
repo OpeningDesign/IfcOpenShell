@@ -986,7 +986,12 @@ class Raycast(bonsai.core.tool.Raycast):
             valid_snap_objs.append(snap_obj)
         cls.snap_objs[:] = valid_snap_objs
         for i, snap_obj in enumerate(cls.snap_objs):
-            if obj.name == snap_obj.obj.name:
+            try:
+                cached_name = snap_obj.obj.name
+            except ReferenceError:
+                cls.snap_objs.pop(i)
+                break
+            if obj.name == cached_name:
                 # Fast O(1) invalidation: vertex count change (mesh edit) or
                 # world matrix change (object moved/rotated).
                 if len(obj.data.vertices) != len(snap_obj.verts_3d):
