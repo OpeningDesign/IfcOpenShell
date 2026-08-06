@@ -29,6 +29,7 @@
 
 #include "../ifcparse/IfcLogger.h"
 #include "../ifcgeom_schema_agnostic/Kernel.h"
+#include "../ifcgeom_schema_agnostic/base_utils.h"
 
 IfcGeom::Representation::Serialization::Serialization(const BRep& brep)
 	: Representation(brep.settings())
@@ -214,7 +215,7 @@ bool IfcGeom::Representation::BRep::calculate_volume(double& volume) const {
 		volume = 0.;
 
 		for (IfcGeom::IfcRepresentationShapeItems::const_iterator it = begin(); it != end(); ++it) {
-			if (Kernel::is_manifold(it->Shape())) {
+			if (util::is_manifold(it->Shape())) {
 				GProp_GProps prop;
 				BRepGProp::VolumeProperties(it->Shape(), prop);
 				volume += prop.Mass();
@@ -238,7 +239,7 @@ bool IfcGeom::Representation::BRep::calculate_projected_surface_area(const gp_Ax
 			double x, y, z;
 			surface_area_along_direction(settings().deflection_tolerance(), it->Shape(), ax, x, y, z);
 
-			if (Kernel::is_manifold(it->Shape())) {
+			if (util::is_manifold(it->Shape())) {
 				x /= 2.;
 				y /= 2.;
 				z /= 2.;
@@ -266,6 +267,10 @@ IfcGeom::Representation::Triangulation::Triangulation(const BRep& shape_model)
 		// Don't weld vertices that belong to different items to prevent non-manifold situations.
 		weld_offset_ += welds.size();
 		welds.clear();
+
+		// When welding vertices, vertex coords will be shared among faces so we need to per-shape set
+		// to keep track of which edges were already emitted.
+		std::set<std::pair<int, int>> emitted_edges;
 
 		int surface_style_id = -1;
 		if (iit->hasStyle()) {
@@ -318,7 +323,6 @@ IfcGeom::Representation::Triangulation::Triangulation(const BRep& shape_model)
 				// Keep track of the number of times an edge is used
 				// Manifold edges (i.e. edges used twice) are deemed invisible
 				std::map<std::pair<int, int>, int> edgecount;
-				std::vector<std::pair<int, int> > edges_temp;
 
 				std::vector<gp_XYZ> coords;
 				BRepGProp_Face prop(face);
@@ -331,7 +335,7 @@ IfcGeom::Representation::Triangulation::Triangulation(const BRep& shape_model)
 				for (int i = 1; i <= tri->NbNodes(); ++i) {
 					coords.push_back(tri->Node(i).Transformed(loc).XYZ());
 					trsf.Transforms(*coords.rbegin());
-					dict[i] = addVertex(surface_style_id, *coords.rbegin());
+					dict[i] = addVertex(iit->ItemId(), surface_style_id, *coords.rbegin());
 
 					if (calculate_normals) {
 						const gp_Pnt2d& uv = tri->UVNode(i);
@@ -367,6 +371,11 @@ IfcGeom::Representation::Triangulation::Triangulation(const BRep& shape_model)
 						triangles(i).Get(n3, n2, n1);
 					else triangles(i).Get(n1, n2, n3);
 
+					if (dict[n1] == dict[n2] || dict[n2] == dict[n3] || dict[n3] == dict[n1]) {
+						Logger::Warning("Mesher generated a degenerate triangle, ignoring");
+						continue;
+					}
+
 					/* An alternative would be to calculate normals based
 						* on the coordinates of the mesh vertices */
 						/*
@@ -386,16 +395,22 @@ IfcGeom::Representation::Triangulation::Triangulation(const BRep& shape_model)
 					_faces.push_back(dict[n3]);
 
 					_material_ids.push_back(surface_style_id);
+					_item_ids.push_back(iit->ItemId());
 
-					addEdge(dict[n1], dict[n2], edgecount, edges_temp);
-					addEdge(dict[n2], dict[n3], edgecount, edges_temp);
-					addEdge(dict[n3], dict[n1], edgecount, edges_temp);
+					addEdge(dict[n1], dict[n2], edgecount);
+					addEdge(dict[n2], dict[n3], edgecount);
+					addEdge(dict[n3], dict[n1], edgecount);
 				}
-				for (std::vector<std::pair<int, int> >::const_iterator jt = edges_temp.begin(); jt != edges_temp.end(); ++jt) {
-					if (edgecount[*jt] == 1) {
+				for (auto& p : edgecount) {
+					// @todo should be != 2?
+					if (p.second == 1 && emitted_edges.find(p.first) == emitted_edges.end()) {
 						// non manifold edge, face boundary
-						_edges.push_back(jt->first);
-						_edges.push_back(jt->second);
+						_edges.push_back(p.first.first);
+						_edges.push_back(p.first.second);
+						if (settings().get(IteratorSettings::WELD_VERTICES)) {
+							// only relevant while welding, because otherwise vertices are not shared among distinct faces
+							emitted_edges.insert(p.first);
+						}
 					}
 				}
 			}
@@ -418,8 +433,10 @@ IfcGeom::Representation::Triangulation::Triangulation(const BRep& shape_model)
 
 				for (int i = 1; i <= n; ++i) {
 					gp_XYZ p = tessellater.Value(i).XYZ();
+					auto p_local = p;
+					trsf.Transforms(p);
 
-					int current = addVertex(surface_style_id, p);
+					int current = addVertex(iit->ItemId(), surface_style_id, p);
 
 					std::vector<std::pair<int, int>> segments;
 					if (i > 1) {
@@ -445,14 +462,13 @@ IfcGeom::Representation::Triangulation::Triangulation(const BRep& shape_model)
 						}
 						d3 = d1.XYZ() + d2.XYZ();
 						d4 = d1.XYZ() - d2.XYZ();
-						p2 = p - d3.XYZ() / 10.;
-						p3 = p - d4.XYZ() / 10.;
+						p2 = p_local - d3.XYZ() / 10.;
+						p3 = p_local - d4.XYZ() / 10.;
 						trsf.Transforms(p2);
 						trsf.Transforms(p3);
-						trsf.Transforms(p);
 
-						int left = addVertex(surface_style_id, p2);
-						int right = addVertex(surface_style_id, p3);
+						int left = addVertex(iit->ItemId(), surface_style_id, p2);
+						int right = addVertex(iit->ItemId(), surface_style_id, p3);
 
 						segments.push_back(std::make_pair(left, current));
 						segments.push_back(std::make_pair(right, current));
@@ -462,6 +478,7 @@ IfcGeom::Representation::Triangulation::Triangulation(const BRep& shape_model)
 						_edges.push_back(sgmt.first);
 						_edges.push_back(sgmt.second);
 						_material_ids.push_back(surface_style_id);
+						_item_ids.push_back(iit->ItemId());
 					}
 
 					previous = current;
@@ -504,14 +521,14 @@ std::vector<double> IfcGeom::Representation::Triangulation::box_project_uvs(cons
 	return uvs;
 }
 
-int IfcGeom::Representation::Triangulation::addVertex(int material_index, const gp_XYZ & p) {
+int IfcGeom::Representation::Triangulation::addVertex(int item_index, int material_index, const gp_XYZ & p) {
 	const bool convert = settings().get(IteratorSettings::CONVERT_BACK_UNITS);
 	const double X = convert ? (p.X() / settings().unit_magnitude()) : p.X();
 	const double Y = convert ? (p.Y() / settings().unit_magnitude()) : p.Y();
 	const double Z = convert ? (p.Z() / settings().unit_magnitude()) : p.Z();
 	int i = (int)_verts.size() / 3;
 	if (settings().get(IteratorSettings::WELD_VERTICES)) {
-		const VertexKey key = std::make_pair(material_index, std::make_pair(X, std::make_pair(Y, Z)));
+		const VertexKey key = std::make_tuple(item_index, material_index, X, Y, Z);
 		typename VertexKeyMap::const_iterator it = welds.find(key);
 		if (it != welds.end()) return it->second;
 		i = (int)(welds.size() + weld_offset_);
@@ -523,9 +540,7 @@ int IfcGeom::Representation::Triangulation::addVertex(int material_index, const 
 	return i;
 }
 
-void IfcGeom::Representation::Triangulation::addEdge(int n1, int n2, std::map<std::pair<int, int>, int>& edgecount, std::vector<std::pair<int, int>>& edges_temp) {
+void IfcGeom::Representation::Triangulation::addEdge(int n1, int n2, std::map<std::pair<int, int>, int>& edgecount) {
 	const Edge e = Edge((std::min)(n1, n2), (std::max)(n1, n2));
-	if (edgecount.find(e) == edgecount.end()) edgecount[e] = 1;
-	else edgecount[e] ++;
-	edges_temp.push_back(e);
+	edgecount[e] ++;
 }

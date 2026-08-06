@@ -15,18 +15,47 @@
 #
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
+import ifcopenshell
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"assigned_object": None}
-        for key, value in settings.items():
-            self.settings[key] = value
+def add_role(file: ifcopenshell.file, assigned_object: ifcopenshell.entity_instance, role: str = "ARCHITECT") -> ifcopenshell.entity_instance:
+    """Adds and assigns a new role
 
-    def execute(self):
-        element = self.file.createIfcActorRole("ARCHITECT")
-        roles = list(self.settings["assigned_object"].Roles) if self.settings["assigned_object"].Roles else []
-        roles.append(element)
-        self.settings["assigned_object"].Roles = roles
-        return element
+    People and organisations must play one or more roles on a project. Roles
+    include architects, engineers, subcontractors, clients, manufacturers,
+    etc. Typically these roles and their corresponding responsibilities will
+    be outlined in contractual documents.
+
+    This function will both add and assign the role to the person or
+    organisation.
+
+    :param assigned_object: The IfcPerson or IfcOrganization the role should
+        be assigned to.
+    :type assigned_object: ifcopenshell.entity_instance
+    :param role: The type of role, taken from the IFC documentation for
+        IfcActorRole, or a custom name. Defaults to "ARCHITECT".
+    :type role: str, optional
+    :return: The newly created IfcActorRole
+    :rtype: ifcopenshell.entity_instance
+
+    Example:
+
+    .. code:: python
+
+        organisation = ifcopenshell.api.run("owner.add_organisation", model,
+            identification="AWB", name="Architects Without Ballpens")
+        ifcopenshell.api.run("owner.add_role", model, assigned_object=organisation, role="ARCHITECT")
+    """
+    settings = {"assigned_object": assigned_object, "role": role}
+
+    element = file.createIfcActorRole("ARCHITECT")
+    if settings["role"]:
+        try:
+            element.Role = settings["role"]
+        except:
+            element.Role = "USERDEFINED"
+            element.UserDefinedRole = settings["role"]
+    roles = list(settings["assigned_object"].Roles) if settings["assigned_object"].Roles else []
+    roles.append(element)
+    settings["assigned_object"].Roles = roles
+    return element

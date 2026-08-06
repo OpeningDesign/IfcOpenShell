@@ -20,38 +20,45 @@ import bpy
 from . import ui, prop, operator
 
 classes = (
-    operator.DisableResourceEditingUI,
-    operator.DisableEditingResource,
-    operator.EnableEditingResource,
-    operator.LoadResources,
     operator.AddResource,
     operator.AddResourceQuantity,
-    operator.EditResource,
-    operator.RemoveResource,
-    operator.RemoveResourceQuantity,
-    operator.LoadResourceProperties,
-    operator.ExpandResource,
-    operator.ContractResource,
+    operator.AddProductivityData,
     operator.AssignResource,
-    operator.UnassignResource,
-    operator.EnableEditingResourceTime,
-    operator.EnableEditingResourceQuantity,
-    operator.EnableEditingResourceBaseQuantity,
-    operator.EnableEditingResourceCosts,
-    operator.EnableEditingResourceCostValueFormula,
-    operator.EnableEditingResourceCostValue,
-    operator.EditResourceTime,
-    operator.EditResourceQuantity,
+    operator.CalculateResourceWork,
+    operator.ConstrainResourceWork,
+    operator.ContractResource,
+    operator.DisableEditingResource,
+    operator.DisableEditingResourceCostValue,
+    operator.DisableEditingResourceQuantity,
+    operator.DisableEditingResourceTime,
+    operator.DisableResourceEditingUI,
+    operator.EditProductivityData,
+    operator.EditResource,
     operator.EditResourceCostValue,
     operator.EditResourceCostValueFormula,
-    operator.DisableEditingResourceTime,
-    operator.DisableEditingResourceQuantity,
-    operator.DisableEditingResourceCostValue,
-    operator.CalculateResourceWork,
+    operator.EditResourceQuantity,
+    operator.EditResourceTime,
+    operator.EnableEditingResource,
+    operator.EnableEditingResourceBaseQuantity,
+    operator.EnableEditingResourceCosts,
+    operator.EnableEditingResourceCostValue,
+    operator.CalculateResourceUsage,
+    operator.EnableEditingResourceCostValueFormula,
+    operator.EnableEditingResourceQuantity,
+    operator.EnableEditingResourceTime,
+    operator.ExpandResource,
+    operator.GoToResource,
     operator.ImportResources,
+    operator.LoadResources,
+    operator.RemoveResource,
+    operator.RemoveResourceQuantity,
+    operator.RemoveUsageConstraint,
+    operator.UnassignResource,
     prop.Resource,
     prop.BIMResourceProperties,
     prop.BIMResourceTreeProperties,
+    prop.ISODuration,
+    prop.BIMResourceProductivity,
     ui.BIM_PT_resources,
     ui.BIM_UL_resources,
 )
@@ -60,8 +67,10 @@ classes = (
 def register():
     bpy.types.Scene.BIMResourceProperties = bpy.props.PointerProperty(type=prop.BIMResourceProperties)
     bpy.types.Scene.BIMResourceTreeProperties = bpy.props.PointerProperty(type=prop.BIMResourceTreeProperties)
+    bpy.types.Scene.BIMResourceProductivity = bpy.props.PointerProperty(type=prop.BIMResourceProductivity)
 
 
 def unregister():
     del bpy.types.Scene.BIMResourceProperties
     del bpy.types.Scene.BIMResourceTreeProperties
+    del bpy.types.Scene.BIMResourceProductivity

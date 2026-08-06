@@ -19,18 +19,18 @@
 from bpy.types import Panel
 from blenderbim.bim.ifc import IfcStore
 from blenderbim.bim.module.diff.data import DiffData
+import blenderbim.bim.helper
 import blenderbim.tool as tool
-import json
 
 
 class BIM_PT_diff(Panel):
-    bl_label = "IFC Diff"
+    bl_label = "Diff"
     bl_idname = "BIM_PT_diff"
     bl_options = {"DEFAULT_CLOSED"}
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "scene"
-    bl_parent_id = "BIM_PT_quality_control"
+    bl_parent_id = "BIM_PT_tab_quality_control"
 
     def draw(self, context):
         if not DiffData.is_loaded:
@@ -44,13 +44,38 @@ class BIM_PT_diff(Panel):
 
         layout.label(text="IFC Diff Setup:")
 
-        row = layout.row(align=True)
-        row.prop(props, "old_file")
-        row.operator("bim.select_diff_old_file", icon="FILE_FOLDER", text="")
+        if tool.Ifc.get():
+            row = layout.row()
+            row.prop(props, "active_file")
 
-        row = layout.row(align=True)
-        row.prop(props, "new_file")
-        row.operator("bim.select_diff_new_file", icon="FILE_FOLDER", text="")
+            if props.active_file == "NONE":
+                row = layout.row(align=True)
+                row.prop(props, "old_file")
+                row.operator("bim.select_diff_old_file", icon="FILE_FOLDER", text="")
+
+                row = layout.row(align=True)
+                row.prop(props, "new_file")
+                row.operator("bim.select_diff_new_file", icon="FILE_FOLDER", text="")
+            elif props.active_file == "NEW":
+                row = layout.row(align=True)
+                row.prop(props, "old_file")
+                row.operator("bim.select_diff_old_file", icon="FILE_FOLDER", text="")
+            elif props.active_file == "OLD":
+                row = layout.row(align=True)
+                row.prop(props, "new_file")
+                row.operator("bim.select_diff_new_file", icon="FILE_FOLDER", text="")
+
+            if props.active_file != "NONE":
+                row = layout.row()
+                row.prop(props, "should_load_changed_elements")
+        else:
+            row = layout.row(align=True)
+            row.prop(props, "old_file")
+            row.operator("bim.select_diff_old_file", icon="FILE_FOLDER", text="")
+
+            row = layout.row(align=True)
+            row.prop(props, "new_file")
+            row.operator("bim.select_diff_new_file", icon="FILE_FOLDER", text="")
 
         row = layout.row(align=True)
         row.prop(props, "diff_relationships")
@@ -68,9 +93,7 @@ class BIM_PT_diff(Panel):
             remove.collection = "diff_relationships"
             remove.index = index
 
-        row = layout.row(align=True)
-        row.prop(props, "diff_filter_elements")
-        row.operator("bim.ifc_selector", icon="FILTER", text="")
+        blenderbim.bim.helper.draw_filter(self.layout, props.filter_groups, DiffData, "diff")
 
         row = layout.row()
         row.operator("bim.execute_ifc_diff")
@@ -82,10 +105,22 @@ class BIM_PT_diff(Panel):
 
         if DiffData.data["diff_json"]:
             row = layout.row()
-            row.alignment = "CENTER"
-            row.label(text=f"{DiffData.data['total_added']} added")
-            row.label(text=f"{DiffData.data['total_deleted']} deleted")
-            row.label(text=f"{DiffData.data['total_changed']} changed")
+            col = row.column(align=True)
+            col.operator(
+                "bim.select_diff_objects",
+                icon="RESTRICT_SELECT_OFF",
+                text=f"Select {DiffData.data['total_added']} Added",
+            ).mode = "ADDED"
+            col.operator(
+                "bim.select_diff_objects",
+                icon="RESTRICT_SELECT_OFF",
+                text=f"Select {DiffData.data['total_deleted']} Deleted",
+            ).mode = "DELETED"
+            col.operator(
+                "bim.select_diff_objects",
+                icon="RESTRICT_SELECT_OFF",
+                text=f"Select {DiffData.data['total_changed']} Changed",
+            ).mode = "CHANGED"
 
         if DiffData.data["changes"]:
             box = layout.box()

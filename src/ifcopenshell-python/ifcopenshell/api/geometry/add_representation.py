@@ -15,49 +15,94 @@
 #
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
-
-import bpy
+from __future__ import annotations
+import bpy.types
+import math
 import bmesh
 import ifcopenshell.util.unit
 from mathutils import Vector, Matrix
-from blenderbim.bim.module.geometry.helper import Helper
+from typing import Union, Optional, Literal, Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from blenderbim.bim.module.geometry.helper import Helper
+
 
 Z_AXIS = Vector((0, 0, 1))
 X_AXIS = Vector((1, 0, 0))
 EPSILON = 1e-6
 
 
+def add_representation(
+    file: ifcopenshell.file,
+    *,  # keywords only as this API implementation is probably not final
+    # IfcGeometricRepresentationContext
+    context: ifcopenshell.entity_instance,
+    # This is (currently) a Blender object, hence this depends on Blender now
+    blender_object: bpy.types.Object,
+    # This is (currently) a Blender data object, hence this depends on Blender now
+    geometry: Union[bpy.types.Mesh, bpy.types.Curve],
+    # Optionally apply a vector offset to all coordinates
+    coordinate_offset: Optional[Vector] = None,
+    # How many representation items to create
+    total_items: int = 1,
+    # A scale factor to apply for all vectors in case the unit is different
+    unit_scale: Optional[float] = None,
+    # If we should force faceted breps for meshes
+    should_force_faceted_brep: bool = False,
+    # If we should force triangulation for meshes
+    should_force_triangulation: bool = False,
+    # If UV coordinates should also be generated
+    should_generate_uvs: bool = False,
+    # Whether to cast a mesh into a particular class
+    ifc_representation_class: Optional[
+        Literal[
+            "IfcExtrudedAreaSolid/IfcRectangleProfileDef",
+            "IfcExtrudedAreaSolid/IfcCircleProfileDef",
+            "IfcExtrudedAreaSolid/IfcArbitraryClosedProfileDef",
+            "IfcExtrudedAreaSolid/IfcArbitraryProfileDefWithVoids",
+            "IfcExtrudedAreaSolid/IfcMaterialProfileSetUsage",
+            "IfcGeometricCurveSet/IfcTextLiteral",
+            "IfcTextLiteral",
+        ]
+    ] = None,
+    # The material profile set if the extrusion requires it
+    profile_set_usage: Optional[ifcopenshell.entity_instance] = None,
+    # The text literal if the representation requires it
+    text_literal: Optional[ifcopenshell.entity_instance] = None,
+) -> ifcopenshell.entity_instance:
+    # lazy import Helper to avoid circular import
+    if "Helper" not in globals():
+        from blenderbim.bim.module.geometry.helper import Helper
+
+        globals()["Helper"] = Helper
+
+    usecase = Usecase()
+    # TODO: This usecase currently depends on Blender's data model
+    usecase.file = file
+    usecase.settings = {
+        "context": context,
+        "blender_object": blender_object,
+        "geometry": geometry,
+        "coordinate_offset": coordinate_offset,
+        "total_items": total_items,
+        "unit_scale": unit_scale,
+        "should_force_faceted_brep": should_force_faceted_brep,
+        "should_force_triangulation": should_force_triangulation,
+        "should_generate_uvs": should_generate_uvs,
+        "ifc_representation_class": ifc_representation_class,
+        "profile_set_usage": profile_set_usage,
+        "text_literal": text_literal,
+    }
+    usecase.ifc_vertices = []
+    return usecase.execute()
+
+
 class Usecase:
-    def __init__(self, file, **settings):
-        # TODO: This usecase currently depends on Blender's data model
-        self.file = file
-        self.settings = {
-            "context": None,  # IfcGeometricRepresentationContext
-            "blender_object": None,  # This is (currently) a Blender object, hence this depends on Blender now
-            "geometry": None,  # This is (currently) a Blender data object, hence this depends on Blender now
-            "coordinate_offset": None,  # Optionally apply a vector offset to all coordinates
-            "total_items": 1,  # How many representation items to create
-            "unit_scale": None,  # A scale factor to apply for all vectors in case the unit is different
-            "should_force_faceted_brep": False,  # If we should force faceted breps for meshes
-            "should_force_triangulation": False,  # If we should force triangulation for meshes
-            "should_generate_uvs": False,  # If UV coordinates should also be generated
-            #  Possible IFC representation classes:
-            #  IfcExtrudedAreaSolid/IfcRectangleProfileDef
-            #  IfcExtrudedAreaSolid/IfcCircleProfileDef
-            #  IfcExtrudedAreaSolid/IfcArbitraryClosedProfileDef
-            #  IfcExtrudedAreaSolid/IfcArbitraryProfileDefWithVoids
-            #  IfcExtrudedAreaSolid/IfcMaterialProfileSetUsage
-            #  IfcGeometricCurveSet/IfcTextLiteral
-            #  IfcTextLiteral
-            "ifc_representation_class": None,  # Whether to cast a mesh into a particular class
-            "profile_set_usage": None,  # The material profile set if the extrusion requires it
-            "text_literal": None,  # The text literal if the representation requires it
-        }
-        self.ifc_vertices = []
-        for key, value in settings.items():
-            self.settings[key] = value
+    file: ifcopenshell.file
+    settings: dict[str, Any]
 
     def execute(self):
+        self.is_manifold = None
         if (
             isinstance(self.settings["geometry"], bpy.types.Mesh)
             and self.settings["geometry"] == self.settings["blender_object"].data
@@ -95,6 +140,13 @@ class Usecase:
         mesh = self.settings["blender_object"].evaluated_get(bpy.context.evaluated_depsgraph_get()).to_mesh()
         bm = bmesh.new()
         bm.from_mesh(mesh)
+
+        self.is_manifold = True
+        for edge in bm.edges:
+            if not edge.is_manifold:
+                self.is_manifold = False
+                break
+
         if self.settings["should_force_triangulation"]:
             faces = bm.faces
         else:
@@ -114,7 +166,16 @@ class Usecase:
     def create_model_representation(self):
         if self.settings["context"].is_a() == "IfcGeometricRepresentationContext":
             return self.create_variable_representation()
-        if self.settings["context"].ContextIdentifier == "Annotation":
+        elif self.settings["ifc_representation_class"] == "IfcTextLiteral":
+            return self.create_text_representation(is_2d=False)
+        elif self.settings["ifc_representation_class"] == "IfcGeometricCurveSet/IfcTextLiteral":
+            shape_representation = self.create_geometric_curve_set_representation(is_2d=True)
+            shape_representation.RepresentationType = "Annotation3D"
+            items = list(shape_representation.Items)
+            items.append(self.create_text())
+            shape_representation.Items = items
+            return shape_representation
+        elif self.settings["context"].ContextIdentifier == "Annotation":
             return self.create_annotation3d_representation()
         elif self.settings["context"].ContextIdentifier == "Axis":
             return self.create_curve3d_representation()
@@ -140,7 +201,7 @@ class Usecase:
 
     def create_plan_representation(self):
         if self.settings["ifc_representation_class"] == "IfcTextLiteral":
-            return self.create_text_representation()
+            return self.create_text_representation(is_2d=True)
         elif self.settings["ifc_representation_class"] == "IfcGeometricCurveSet/IfcTextLiteral":
             shape_representation = self.create_geometric_curve_set_representation(is_2d=True)
             shape_representation.RepresentationType = "Annotation2D"
@@ -153,7 +214,7 @@ class Usecase:
         elif self.settings["context"].ContextIdentifier == "Axis":
             return self.create_curve2d_representation()
         elif self.settings["context"].ContextIdentifier == "Body":
-            pass
+            return self.create_annotation2d_representation()
         elif self.settings["context"].ContextIdentifier == "Box":
             pass
         elif self.settings["context"].ContextIdentifier == "Clearance":
@@ -194,11 +255,11 @@ class Usecase:
             },
         )
 
-    def create_text_representation(self):
+    def create_text_representation(self, is_2d=False):
         return self.file.createIfcShapeRepresentation(
             self.settings["context"],
             self.settings["context"].ContextIdentifier,
-            "Annotation2D",
+            "Annotation2D" if is_2d else "Annotation3D",
             [self.create_text()],
         )
 
@@ -222,7 +283,10 @@ class Usecase:
         elif isinstance(self.settings["geometry"], bpy.types.Curve):
             return self.create_curve3d_representation()
         elif isinstance(self.settings["geometry"], bpy.types.Camera):
-            return self.create_camera_block_representation()
+            if self.settings["geometry"].type == "ORTHO":
+                return self.create_camera_block_representation()
+            elif self.settings["geometry"].type == "PERSP":
+                return self.create_camera_pyramid_representation()
         elif not len(self.settings["geometry"].edges):
             return self.create_point_cloud_representation()
         elif not len(self.settings["geometry"].polygons):
@@ -252,14 +316,12 @@ class Usecase:
 
         block = self.file.create_entity(
             "IfcBlock",
-            **{
-                "Position": self.file.createIfcAxis2Placement3D(
-                    self.create_cartesian_point(-width / 2, -height / 2, -self.settings["geometry"].clip_end)
-                ),
-                "XLength": self.convert_si_to_unit(width),
-                "YLength": self.convert_si_to_unit(height),
-                "ZLength": self.convert_si_to_unit(self.settings["geometry"].clip_end),
-            },
+            Position=self.file.createIfcAxis2Placement3D(
+                self.create_cartesian_point(-width / 2, -height / 2, -self.settings["geometry"].clip_end)
+            ),
+            XLength=self.convert_si_to_unit(width),
+            YLength=self.convert_si_to_unit(height),
+            ZLength=self.convert_si_to_unit(self.settings["geometry"].clip_end),
         )
 
         return self.file.createIfcShapeRepresentation(
@@ -267,6 +329,48 @@ class Usecase:
             self.settings["context"].ContextIdentifier,
             "CSG",
             [self.file.createIfcCsgSolid(block)],
+        )
+
+    def create_camera_pyramid_representation(self):
+        raster_x = self.settings["geometry"].BIMCameraProperties.raster_x
+        raster_y = self.settings["geometry"].BIMCameraProperties.raster_y
+        fov = self.settings["geometry"].angle
+
+        clip_end = self.settings["geometry"].clip_end
+        clip_start = self.settings["geometry"].clip_start
+
+        if self.is_camera_landscape():
+            half_width = math.tan(fov / 2) * clip_end
+            half_height = half_width * raster_y / raster_x
+        else:
+            half_height = math.tan(fov / 2) * clip_end
+            half_width = half_height * raster_x / raster_y
+
+        x_length = 2 * half_width
+        y_length = 2 * half_height
+
+        pyramid = self.file.create_entity(
+            "IfcRectangularPyramid",
+            Position=self.file.createIfcAxis2Placement3D(
+                self.create_cartesian_point(-x_length / 2, -y_length / 2, -clip_end)
+            ),
+            XLength=self.convert_si_to_unit(x_length),
+            YLength=self.convert_si_to_unit(y_length),
+            Height=self.convert_si_to_unit(clip_end),
+        )
+
+        surface = self.file.createIfcPlane(
+            self.file.createIfcAxis2Placement3D(self.create_cartesian_point(0, 0, -clip_start))
+        )
+        half_space = self.file.createIfcHalfSpaceSolid(surface, False)
+
+        clipping_result = self.file.create_entity("IfcBooleanResult", "DIFFERENCE", pyramid, half_space)
+
+        return self.file.createIfcShapeRepresentation(
+            self.settings["context"],
+            self.settings["context"].ContextIdentifier,
+            "CSG",
+            [self.file.createIfcCsgSolid(clipping_result)],
         )
 
     def is_camera_landscape(self):
@@ -284,12 +388,10 @@ class Usecase:
         )
 
     def create_curve3d_representation(self):
-        return self.file.createIfcShapeRepresentation(
-            self.settings["context"],
-            self.settings["context"].ContextIdentifier,
-            "Curve3D",
-            self.create_curves(),
-        )
+        if curves := self.create_curves():
+            return self.file.createIfcShapeRepresentation(
+                self.settings["context"], self.settings["context"].ContextIdentifier, "Curve3D", curves
+            )
 
     def create_curve2d_representation(self):
         return self.file.createIfcShapeRepresentation(
@@ -313,12 +415,14 @@ class Usecase:
         return items
 
     def create_plane(self, polygon):
-        return self.file.createIfcPlane(Position=self.file.createIfcAxis2Placement3D(
-            Location=self.file.createIfcCartesianPoint(polygon.center),
-            Axis=self.file.createIfcDirection(polygon.normal),
-        ))
+        return self.file.createIfcPlane(
+            Position=self.file.createIfcAxis2Placement3D(
+                Location=self.file.createIfcCartesianPoint(polygon.center),
+                Axis=self.file.createIfcDirection(polygon.normal),
+            )
+        )
 
-    def create_annotation_fill_areas(self, is_2d=False):
+    def create_annotation_fill_areas(self, is_2d=False) -> list[ifcopenshell.entity_instance]:
         items = []
         if self.file.schema != "IFC2X3":
             points = self.create_cartesian_point_list_from_vertices(self.settings["geometry"].vertices, is_2d=is_2d)
@@ -330,7 +434,9 @@ class Usecase:
             items.append(self.file.createIfcAnnotationFillArea(OuterBoundary=curve))
         return items
 
-    def create_curve_from_polygon(self, points, polygon, is_2d=False):
+    def create_curve_from_polygon(
+        self, points: ifcopenshell.entity_instance, polygon: bpy.types.MeshPolygon, is_2d=False
+    ) -> ifcopenshell.entity_instance:
         indices = list(polygon.vertices)
         indices.append(indices[0])
         edge_loop = [self.file.createIfcLineIndex((v1 + 1, v2 + 1)) for v1, v2 in zip(indices, indices[1:])]
@@ -353,29 +459,100 @@ class Usecase:
             results.append(self.file.createIfcSweptDiskSolid(curve, radius))
         return results
 
-    def create_curves(self, should_exclude_faces=False, is_2d=False):
-        if isinstance(self.settings["geometry"], bpy.types.Mesh):
-            if self.file.schema == "IFC2X3":
-                return self.create_curves_from_mesh_ifc2x3(should_exclude_faces=should_exclude_faces, is_2d=is_2d)
-            else:
+    def is_mesh_curve_consecutive(self, geom_data):
+        import blenderbim.tool as tool
+
+        bm = tool.Blender.get_bmesh_for_mesh(geom_data)
+        bm.verts.ensure_lookup_table()
+        start_vert = bm.verts[0]
+        n_verts = len(bm.verts)
+        cur_edges = bm.verts[0].link_edges
+
+        if len(cur_edges) > 2:
+            return False
+        elif cur_edges == 2:
+            edge0, edge1 = cur_edges
+        else:
+            edge0, edge1 = cur_edges[0], None
+
+        processed_verts = set()
+        processed_verts.add(start_vert)
+
+        def validate_edge(edge, start_vert, processed_verts):
+            cur_vert = edge.other_vert(start_vert)
+            while True:
+                if cur_vert == start_vert:
+                    break
+                if cur_vert in processed_verts:
+                    return
+                processed_verts.add(cur_vert)
+                edges = cur_vert.link_edges
+                if len(edges) > 2:
+                    return
+                elif len(edges) == 1:
+                    return True
+                edge = next(e for e in edges if e != edge)
+                cur_vert = edge.other_vert(cur_vert)
+            return True
+
+        if not validate_edge(edge0, start_vert, processed_verts):
+            return
+
+        if edge1 and not validate_edge(edge1, start_vert, processed_verts):
+            return
+
+        if len(processed_verts) != n_verts:
+            return False
+        return True
+
+    def create_curves(self, should_exclude_faces=False, is_2d=False, ignore_non_loose_edges=False):
+        geom_data = self.settings["geometry"]
+
+        if isinstance(geom_data, bpy.types.Mesh):
+            if self.is_mesh_curve_consecutive(geom_data):
+                if self.file.schema == "IFC2X3":
+                    return self.create_curves_from_mesh_ifc2x3(should_exclude_faces=should_exclude_faces, is_2d=is_2d)
                 return self.create_curves_from_mesh(should_exclude_faces=should_exclude_faces, is_2d=is_2d)
-        elif isinstance(self.settings["geometry"], bpy.types.Curve):
-            return self.create_curves_from_curve(is_2d=is_2d)
+
+        import blenderbim.tool as tool
+
+        selected_objects = bpy.context.selected_objects
+        active_object = bpy.context.active_object
+
+        # create dummy object that will have more detailed curves
+        # since now we do not really support splines curves natively
+        obj = self.settings["blender_object"]
+        dummy = bpy.data.objects.new("Dummy", obj.data.copy())
+        bpy.context.scene.collection.objects.link(dummy)
+        tool.Blender.select_and_activate_single_object(bpy.context, dummy)
+        if not isinstance(geom_data, bpy.types.Mesh):
+            bpy.ops.object.convert(target="MESH")
+        self.remove_doubles_from_mesh(dummy.data)
+        bpy.ops.object.convert(target="CURVE")
+
+        if self.file.schema == "IFC2X3":
+            curves = self.create_curves_from_curve_ifc2x3(is_2d=is_2d, curve_object_data=dummy.data)
+        else:
+            curves = self.create_curves_from_curve(is_2d=is_2d, curve_object_data=dummy.data)
+
+        # restore objects selection
+        bpy.data.objects.remove(dummy)
+        tool.Blender.set_objects_selection(bpy.context, active_object, selected_objects)
+        return curves
 
     def create_curves_from_mesh(self, should_exclude_faces=False, is_2d=False):
+        geom_data = self.settings["geometry"].copy()
+        self.remove_doubles_from_mesh(geom_data)
         curves = []
-        points = self.create_cartesian_point_list_from_vertices(self.settings["geometry"].vertices, is_2d=is_2d)
+        points = self.create_cartesian_point_list_from_vertices(geom_data.vertices, is_2d=is_2d)
         edge_loops = []
         previous_edge = None
         edge_loop = []
         face_edges = set()
         if should_exclude_faces:
-            [face_edges.union([self.settings["geometry"].edge_keys.index(ek) for ek in p.edge_keys]) for p in self.settings["geometry"].polygons]
-        for i, edge in enumerate(self.settings["geometry"].edges):
+            [face_edges.union([geom_data.edge_keys.index(ek) for ek in p.edge_keys]) for p in geom_data.polygons]
+        for i, edge in enumerate(geom_data.edges):
             if should_exclude_faces and i in face_edges:
-                continue
-            if (Vector(points.CoordList[edge.vertices[0]]) - Vector(points.CoordList[edge.vertices[1]])).length < 0.001:
-                # Maybe we should warn the user to weld vertices in this scenario?
                 continue
             elif previous_edge is None:
                 edge_loop = [self.file.createIfcLineIndex((edge.vertices[0] + 1, edge.vertices[1] + 1))]
@@ -390,11 +567,21 @@ class Usecase:
             curves.append(self.file.createIfcIndexedPolyCurve(points, edge_loop))
         return curves
 
-    def create_curves_from_mesh_ifc2x3(self, should_exclude_faces=False, is_2d=False):
+    def remove_doubles_from_mesh(self, mesh):
+        import blenderbim.tool as tool
+
+        bm = tool.Blender.get_bmesh_for_mesh(mesh)
+        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.0001)
+        tool.Blender.apply_bmesh(mesh, bm)
+
+    def create_curves_from_mesh_ifc2x3(
+        self, should_exclude_faces=False, is_2d=False
+    ) -> list[ifcopenshell.entity_instance]:
+        geom_data = self.settings["geometry"].copy()
+        self.remove_doubles_from_mesh(geom_data)
         curves = []
         points = [
-            self.create_cartesian_point(v.co.x, v.co.y, v.co.z if not is_2d else None)
-            for v in self.settings["geometry"].vertices
+            self.create_cartesian_point(v.co.x, v.co.y, v.co.z if not is_2d else None) for v in geom_data.vertices
         ]
         coord_list = [p.Coordinates for p in points]
         edge_loops = []
@@ -402,12 +589,9 @@ class Usecase:
         edge_loop = []
         face_edges = set()
         if should_exclude_faces:
-            [face_edges.union([self.settings["geometry"].edge_keys.index(ek) for ek in p.edge_keys]) for p in self.settings["geometry"].polygons]
-        for i, edge in enumerate(self.settings["geometry"].edges):
+            [face_edges.union([geom_data.edge_keys.index(ek) for ek in p.edge_keys]) for p in geom_data.polygons]
+        for i, edge in enumerate(geom_data.edges):
             if should_exclude_faces and i in face_edges:
-                continue
-            if (Vector(coord_list[edge.vertices[0]]) - Vector(coord_list[edge.vertices[1]])).length < 0.001:
-                # Maybe we should warn the user to weld vertices in this scenario?
                 continue
             elif previous_edge is None:
                 edge_loop = [edge.vertices]
@@ -424,24 +608,36 @@ class Usecase:
             curves.append(self.file.createIfcPolyline(loop_points))
         return curves
 
-    def create_curves_from_curve(self, is_2d=False):
+    def create_curves_from_curve_ifc2x3(self, is_2d=False, curve_object_data=None):
+        # TODO: support interpolated curves, not just polylines
+        if not curve_object_data:
+            curve_object_data = self.settings["geometry"]
+        dim = (lambda v: v.xy) if is_2d else (lambda v: v.xyz)
         results = []
-        for spline in self.settings["geometry"].splines:
-            # TODO: support interpolated curves, not just polylines
-            points = []
-            for point in spline.bezier_points:
-                if is_2d:
-                    points.append(self.create_cartesian_point(point.co.x, point.co.y))
-                else:
-                    points.append(self.create_cartesian_point(point.co.x, point.co.y, point.co.z))
-            for point in spline.points:
-                if is_2d:
-                    points.append(self.create_cartesian_point(point.co.x, point.co.y))
-                else:
-                    points.append(self.create_cartesian_point(point.co.x, point.co.y, point.co.z))
+        for spline in curve_object_data.splines:
+            points = spline.bezier_points[:] + spline.points[:]
             if spline.use_cyclic_u:
                 points.append(points[0])
-            results.append(self.file.createIfcPolyline(points))
+            ifc_points = [self.create_cartesian_point(*dim(point.co)) for point in points]
+            results.append(self.file.createIfcPolyline(ifc_points))
+        return results
+
+    def create_curves_from_curve(self, is_2d=False, curve_object_data=None):
+        # TODO: support interpolated curves, not just polylines
+        if not curve_object_data:
+            curve_object_data = self.settings["geometry"]
+        dim = (lambda v: v.xy) if is_2d else (lambda v: v.xyz)
+        to_units = lambda v: Vector([self.convert_si_to_unit(i) for i in v])
+        builder = ifcopenshell.util.shape_builder.ShapeBuilder(self.file)
+        results = []
+
+        for spline in curve_object_data.splines:
+            points = spline.bezier_points[:] + spline.points[:]
+
+            points = [to_units(dim(p.co)) for p in points]
+            closed_polyline = spline.use_cyclic_u and len(points) > 1
+            results.append(builder.polyline(points, closed=closed_polyline))
+
         return results
 
     def create_point_cloud_representation(self, is_2d=False):
@@ -591,9 +787,7 @@ class Usecase:
                     [uv + 1 for uv in polygon.loop_indices]
                 )
 
-        coordinates = self.file.createIfcCartesianPointList3D(
-            [self.convert_si_to_unit(v.co) for v in self.settings["geometry"].vertices]
-        )
+        coordinates = self.create_cartesian_point_list_from_vertices(self.settings["geometry"].vertices)
 
         if self.settings["should_generate_uvs"]:
             # Blender supports multiple UV layers. We don't. Too bad.
@@ -628,10 +822,8 @@ class Usecase:
             ifc_raw_items[polygon.material_index % self.settings["total_items"]].append(
                 self.file.createIfcIndexedPolygonalFace([v + 1 for v in polygon.vertices])
             )
-        coordinates = self.file.createIfcCartesianPointList3D(
-            [self.convert_si_to_unit(v.co) for v in self.settings["geometry"].vertices]
-        )
-        items = [self.file.createIfcPolygonalFaceSet(coordinates, None, i) for i in ifc_raw_items if i]
+        coordinates = self.create_cartesian_point_list_from_vertices(self.settings["geometry"].vertices)
+        items = [self.file.createIfcPolygonalFaceSet(coordinates, self.is_manifold, i) for i in ifc_raw_items if i]
         return self.file.createIfcShapeRepresentation(
             self.settings["context"],
             self.settings["context"].ContextIdentifier,
@@ -652,7 +844,12 @@ class Usecase:
             ]
         )
 
-    def create_cartesian_point(self, x, y, z=None):
+    def create_cartesian_point(self, x, y, z=None, is_model_coords=True):
+        if is_model_coords and self.settings["coordinate_offset"]:
+            x += self.settings["coordinate_offset"][0]
+            y += self.settings["coordinate_offset"][1]
+            if z:
+                z += self.settings["coordinate_offset"][2]
         x = self.convert_si_to_unit(x)
         y = self.convert_si_to_unit(y)
         if z is None:
@@ -660,19 +857,25 @@ class Usecase:
         z = self.convert_si_to_unit(z)
         return self.file.createIfcCartesianPoint((x, y, z))
 
-    def create_cartesian_point_list_from_vertices(self, vertices, is_2d=False):
+    def create_cartesian_point_list_from_vertices(self, vertices: list[bpy.types.MeshVertex], is_2d=False, is_model_coords=True):
+        if is_model_coords and self.settings["coordinate_offset"]:
+            if is_2d:
+                xy_offset = Vector((self.settings["coordinate_offset"][0:2]))
+                return self.file.createIfcCartesianPointList2D([self.convert_si_to_unit(v.co.xy + xy_offset) for v in vertices])
+            xyz_offset = Vector((self.settings["coordinate_offset"][0:3]))
+            return self.file.createIfcCartesianPointList3D([self.convert_si_to_unit(v.co.xyz + xyz_offset) for v in vertices])
         if is_2d:
             return self.file.createIfcCartesianPointList2D([self.convert_si_to_unit(v.co.xy) for v in vertices])
         return self.file.createIfcCartesianPointList3D([self.convert_si_to_unit(v.co) for v in vertices])
 
     def convert_si_to_unit(self, co):
-        if self.settings["coordinate_offset"]:
-            return (co / self.settings["unit_scale"]) + self.settings["coordinate_offset"]
         return co / self.settings["unit_scale"]
 
     def create_annotation2d_representation(self):
         if isinstance(self.settings["geometry"], bpy.types.Mesh) and len(self.settings["geometry"].polygons):
             items = self.create_annotation_fill_areas(is_2d=True)
+        elif isinstance(self.settings["geometry"], bpy.types.Mesh) and not len(self.settings["geometry"].edges):
+            return self.create_point_cloud_representation(is_2d=True)
         else:
             items = [self.file.createIfcGeometricCurveSet(self.create_curves(is_2d=True))]
         return self.file.createIfcShapeRepresentation(
@@ -684,12 +887,14 @@ class Usecase:
 
     def create_annotation3d_representation(self):
         items = []
-        curves = self.create_curves(should_exclude_faces=True, is_2d=False)
-        if curves:
-            items.append(self.file.createIfcGeometricCurveSet(curves))
-        surfaces = self.create_curve_bounded_planes()
-        if surfaces:
-            items.append(self.file.createIfcGeometricSet(surfaces))
+        if isinstance(self.settings["geometry"], bpy.types.Mesh) and len(self.settings["geometry"].polygons):
+            items = self.create_annotation_fill_areas(is_2d=False)
+        else:
+            items = [self.file.createIfcGeometricCurveSet(self.create_curves(is_2d=False))]
+        # TODO Unsure when it is appropriate to use curve bounded planes
+        # surfaces = self.create_curve_bounded_planes()
+        # if surfaces:
+        #     items.append(self.file.createIfcGeometricSet(surfaces))
         return self.file.createIfcShapeRepresentation(
             self.settings["context"],
             self.settings["context"].ContextIdentifier,

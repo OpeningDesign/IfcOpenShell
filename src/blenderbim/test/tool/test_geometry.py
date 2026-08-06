@@ -25,7 +25,6 @@ import blenderbim.tool as tool
 from mathutils import Vector
 from test.bim.bootstrap import NewFile
 from blenderbim.tool.geometry import Geometry as subject
-from blenderbim.bim.ifc import IfcStore
 
 
 class TestImplementsTool(NewFile):
@@ -200,7 +199,7 @@ class TestGetElementType(NewFile):
         ifc = tool.Ifc.get()
         element = ifc.createIfcWall()
         type = ifc.createIfcWallType()
-        ifcopenshell.api.run("type.assign_type", ifc, related_object=element, relating_type=type)
+        ifcopenshell.api.run("type.assign_type", ifc, related_objects=[element], relating_type=type)
         assert subject.get_element_type(element) == type
 
 
@@ -210,7 +209,7 @@ class TestGetElementsOfType(NewFile):
         ifc = tool.Ifc.get()
         element = ifc.createIfcWall()
         type = ifc.createIfcWallType()
-        ifcopenshell.api.run("type.assign_type", ifc, related_object=element, relating_type=type)
+        ifcopenshell.api.run("type.assign_type", ifc, related_objects=[element], relating_type=type)
         assert subject.get_elements_of_type(type) == (element,)
 
 
@@ -308,7 +307,7 @@ class TestIsEdited(NewFile):
         assert subject.is_edited(obj) is True
         obj.scale[0] = 1
         assert subject.is_edited(obj) is False
-        IfcStore.edited_objs.add(obj)
+        tool.Ifc.edit(obj)
         assert subject.is_edited(obj) is True
 
 
@@ -479,7 +478,7 @@ class TestShouldGenerateUVs(NewFile):
         obj.data.materials.append(material)
         material.use_nodes = True
 
-        bsdf = material.node_tree.nodes["Principled BSDF"]
+        bsdf = tool.Blender.get_material_node(material, "BSDF_PRINCIPLED")
         node = material.node_tree.nodes.new(type="ShaderNodeTexImage")
         material.node_tree.links.new(bsdf.inputs["Base Color"], node.outputs["Color"])
 
@@ -495,7 +494,7 @@ class TestShouldGenerateUVs(NewFile):
         obj.data.materials.append(material)
         material.use_nodes = True
 
-        bsdf = material.node_tree.nodes["Principled BSDF"]
+        bsdf = tool.Blender.get_material_node(material, "BSDF_PRINCIPLED")
         node = material.node_tree.nodes.new(type="ShaderNodeTexImage")
         material.node_tree.links.new(bsdf.inputs["Base Color"], node.outputs["Color"])
 
@@ -576,3 +575,100 @@ class TestGetIfcRepresentationClass(NewFile):
         ifc = ifcopenshell.file()
         tool.Ifc.set(ifc)
         assert subject.get_ifc_representation_class(ifc.createIfcColumn(), ifc.createIfcShapeRepresentation()) is None
+
+
+class TestRemoveRepresentationItem(NewFile):
+    def test_run(self):
+        ifc = ifcopenshell.file()
+        tool.Ifc.set(ifc)
+
+        context = ifc.createIfcGeometricRepresentationContext()
+        element = ifc.createIfcWall()
+
+        items = [ifc.createIfcExtrudedAreaSolid(), ifc.createIfcExtrudedAreaSolid()]
+        representation = ifc.createIfcShapeRepresentation(Items=items, ContextOfItems=context)
+        tool.Ifc.run("geometry.assign_representation", product=element, representation=representation)
+
+        product_shape = element.Representation
+        shape_aspect = subject.create_shape_aspect(product_shape, representation, items[:1], None)
+        shape_aspect_id = shape_aspect.id()
+
+        subject.remove_representation_item(items[0])
+        assert tool.Ifc.get_entity_by_id(shape_aspect_id) is None
+        assert set(representation.Items) == {items[1]}
+
+
+class TestCreateShapeAspect(NewFile):
+    def test_run(self):
+        self.create_shape_aspect(use_element_type=False)
+        self.create_shape_aspect(use_element_type=True)
+
+    def create_shape_aspect(self, use_element_type):
+        ifc = ifcopenshell.file()
+        tool.Ifc.set(ifc)
+
+        context = ifc.createIfcGeometricRepresentationContext()
+        element = ifc.createIfcWallType() if use_element_type else ifc.createIfcWall()
+
+        item = ifc.createIfcExtrudedAreaSolid()
+        items = [item]
+        representation = ifc.createIfcShapeRepresentation(Items=items, ContextOfItems=context)
+        tool.Ifc.run("geometry.assign_representation", product=element, representation=representation)
+
+        product_shape = element.RepresentationMaps[0] if use_element_type else element.Representation
+        subject.create_shape_aspect(product_shape, representation, items, None)
+        assert len(product_shape.HasShapeAspects) == 1
+        representation = product_shape.HasShapeAspects[0].ShapeRepresentations[0]
+        assert set(representation.Items) == set(items)
+
+
+class TestAddRepresentationItemToShapeAspect(NewFile):
+    def test_run(self):
+        ifc = ifcopenshell.file()
+        tool.Ifc.set(ifc)
+
+        context = ifc.createIfcGeometricRepresentationContext()
+        element = ifc.createIfcWall()
+
+        items = [ifc.createIfcExtrudedAreaSolid(), ifc.createIfcExtrudedAreaSolid()]
+        representation = ifc.createIfcShapeRepresentation(Items=items, ContextOfItems=context)
+        tool.Ifc.run("geometry.assign_representation", product=element, representation=representation)
+        product_shape = element.Representation
+        shape_aspect0 = subject.create_shape_aspect(product_shape, representation, [items[0]], None)
+        previous_shape_aspect_id = shape_aspect0.id()
+        shape_aspect1 = subject.create_shape_aspect(product_shape, representation, [items[1]], None)
+
+        subject.add_representation_item_to_shape_aspect([items[0]], shape_aspect1)
+        # previous shape aspect removed as there won't be any items in it
+        assert tool.Ifc.get_entity_by_id(previous_shape_aspect_id) is None
+        representation = shape_aspect1.ShapeRepresentations[0]
+        assert set(representation.Items) == set(items)
+
+
+class TestRemoveRepresentationItemFromShapeAspect(NewFile):
+    def test_run(self):
+        ifc = ifcopenshell.file()
+        tool.Ifc.set(ifc)
+
+        context = ifc.createIfcGeometricRepresentationContext()
+        element = ifc.createIfcWall()
+
+        items = [ifc.createIfcExtrudedAreaSolid(), ifc.createIfcExtrudedAreaSolid()]
+        representation = ifc.createIfcShapeRepresentation(Items=items, ContextOfItems=context)
+        tool.Ifc.run("geometry.assign_representation", product=element, representation=representation)
+        product_shape = element.Representation
+        shape_aspect0 = subject.create_shape_aspect(product_shape, representation, [items[0]], None)
+        previous_shape_aspect_id = shape_aspect0.id()
+        previous_shape_aspect_rep_id = shape_aspect0.ShapeRepresentations[0].id()
+        shape_aspect1 = subject.create_shape_aspect(product_shape, representation, [items[1]], None)
+
+        subject.remove_representation_items_from_shape_aspect([items[0]], shape_aspect0)
+        # previous shape aspect and representation are removed as there won't be any items in them
+        assert tool.Ifc.get_entity_by_id(previous_shape_aspect_id) is None
+        assert tool.Ifc.get_entity_by_id(previous_shape_aspect_rep_id) is None
+
+        # items is removed from the representaiton
+        subject.add_representation_item_to_shape_aspect([items[0]], shape_aspect1)
+        subject.remove_representation_items_from_shape_aspect([items[1]], shape_aspect1)
+        representation = shape_aspect1.ShapeRepresentations[0]
+        assert set(representation.Items) == {items[0]}

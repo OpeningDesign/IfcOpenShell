@@ -16,8 +16,20 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
 
+import itertools
+import functools
 
-class Base(object):
+
+def indent(n, s):
+    if isinstance(s, str):
+        strs = [s]
+    else:
+        strs = s
+    splitted = itertools.chain.from_iterable(map(functools.partial(str.split, sep="\n"), map(str, strs)))
+    return "\n".join(" "*n + l for l in splitted)
+
+
+class Base:
     """
     A base class for all code generation classes. Currently only working around
     some python 2/3 incompatibilities in terms of unicode file handling.

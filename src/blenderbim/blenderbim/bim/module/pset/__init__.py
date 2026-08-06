@@ -20,14 +20,13 @@ import bpy
 from . import ui, prop, operator
 
 classes = (
+    operator.AddProposedProp,
     operator.AddPset,
     operator.AddQto,
     operator.CopyPropertyToSelection,
     operator.DisablePsetEditing,
     operator.EditPset,
     operator.EnablePsetEditing,
-    operator.GuessQuantity,
-    operator.GuessAllQuantities,
     operator.RemovePset,
     operator.TogglePsetExpansion,
     operator.BIM_OT_add_property_to_edit,
@@ -39,20 +38,19 @@ classes = (
     prop.IfcPropertyEnumeratedValue,
     prop.IfcProperty,
     prop.PsetProperties,
-    prop.MaterialPsetProperties,
-    prop.TaskPsetProperties,
-    prop.ResourcePsetProperties,
-    prop.ProfilePsetProperties,
-    prop.WorkSchedulePsetProperties,
     prop.RenameProperties,
     prop.AddEditProperties,
     prop.DeletePsets,
     ui.BIM_PT_object_psets,
     ui.BIM_PT_object_qtos,
     ui.BIM_PT_material_psets,
+    ui.BIM_PT_material_set_psets,
+    ui.BIM_PT_material_set_item_psets,
     ui.BIM_PT_task_qtos,
     ui.BIM_PT_resource_qtos,
     ui.BIM_PT_resource_psets,
+    ui.BIM_PT_group_psets,
+    ui.BIM_PT_group_qtos,
     ui.BIM_PT_profile_psets,
     ui.BIM_PT_work_schedule_psets,
     ui.BIM_PT_bulk_property_editor,
@@ -64,11 +62,14 @@ classes = (
 
 def register():
     bpy.types.Object.PsetProperties = bpy.props.PointerProperty(type=prop.PsetProperties)
-    bpy.types.Material.PsetProperties = bpy.props.PointerProperty(type=prop.MaterialPsetProperties)
-    bpy.types.Scene.TaskPsetProperties = bpy.props.PointerProperty(type=prop.TaskPsetProperties)
-    bpy.types.Scene.ResourcePsetProperties = bpy.props.PointerProperty(type=prop.ResourcePsetProperties)
-    bpy.types.Scene.ProfilePsetProperties = bpy.props.PointerProperty(type=prop.ProfilePsetProperties)
-    bpy.types.Scene.WorkSchedulePsetProperties = bpy.props.PointerProperty(type=prop.WorkSchedulePsetProperties)
+    bpy.types.Scene.MaterialPsetProperties = bpy.props.PointerProperty(type=prop.PsetProperties)
+    bpy.types.Object.MaterialSetPsetProperties = bpy.props.PointerProperty(type=prop.PsetProperties)
+    bpy.types.Object.MaterialSetItemPsetProperties = bpy.props.PointerProperty(type=prop.PsetProperties)
+    bpy.types.Scene.TaskPsetProperties = bpy.props.PointerProperty(type=prop.PsetProperties)
+    bpy.types.Scene.ResourcePsetProperties = bpy.props.PointerProperty(type=prop.PsetProperties)
+    bpy.types.Scene.GroupPsetProperties = bpy.props.PointerProperty(type=prop.PsetProperties)
+    bpy.types.Scene.ProfilePsetProperties = bpy.props.PointerProperty(type=prop.PsetProperties)
+    bpy.types.Scene.WorkSchedulePsetProperties = bpy.props.PointerProperty(type=prop.PsetProperties)
     bpy.types.Scene.RenameProperties = bpy.props.CollectionProperty(type=prop.RenameProperties)
     bpy.types.Scene.AddEditProperties = bpy.props.CollectionProperty(type=prop.AddEditProperties)
     bpy.types.Scene.DeletePsets = bpy.props.CollectionProperty(type=prop.DeletePsets)
@@ -76,9 +77,12 @@ def register():
 
 def unregister():
     del bpy.types.Object.PsetProperties
-    del bpy.types.Material.PsetProperties
+    del bpy.types.Scene.MaterialPsetProperties
+    del bpy.types.Object.MaterialSetPsetProperties
+    del bpy.types.Object.MaterialSetItemPsetProperties
     del bpy.types.Scene.TaskPsetProperties
     del bpy.types.Scene.ResourcePsetProperties
+    del bpy.types.Scene.GroupPsetProperties
     del bpy.types.Scene.ProfilePsetProperties
     del bpy.types.Scene.WorkSchedulePsetProperties
     del bpy.types.Scene.RenameProperties

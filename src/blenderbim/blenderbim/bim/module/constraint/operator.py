@@ -21,8 +21,8 @@ import json
 import ifcopenshell.api
 import ifcopenshell.util.attribute
 import blenderbim.bim.helper
+import blenderbim.tool as tool
 from blenderbim.bim.ifc import IfcStore
-from ifcopenshell.api.constraint.data import Data
 
 
 class LoadObjectives(bpy.types.Operator):
@@ -33,10 +33,10 @@ class LoadObjectives(bpy.types.Operator):
     def execute(self, context):
         props = context.scene.BIMConstraintProperties
         props.constraints.clear()
-        for constraint_id, constraint in Data.objectives.items():
+        for constraint in tool.Ifc.get().by_type("IfcObjective"):
             new = props.constraints.add()
-            new.name = constraint["Name"] or "Unnamed"
-            new.ifc_definition_id = constraint_id
+            new.name = constraint.Name or "Unnamed"
+            new.ifc_definition_id = constraint.id()
         props.is_editing = "IfcObjective"
         bpy.ops.bim.disable_editing_constraint()
         return {"FINISHED"}
@@ -62,11 +62,7 @@ class EnableEditingConstraint(bpy.types.Operator):
     def execute(self, context):
         props = context.scene.BIMConstraintProperties
         props.constraint_attributes.clear()
-
-        if props.is_editing == "IfcObjective":
-            data = Data.objectives[self.constraint]
-
-        blenderbim.bim.helper.import_attributes(props.is_editing, props.constraint_attributes, data)
+        blenderbim.bim.helper.import_attributes2(tool.Ifc.get().by_id(self.constraint), props.constraint_attributes)
         props.active_constraint_id = self.constraint
         return {"FINISHED"}
 
@@ -91,7 +87,6 @@ class AddObjective(bpy.types.Operator):
 
     def _execute(self, context):
         result = ifcopenshell.api.run("constraint.add_objective", IfcStore.get_file())
-        Data.load(IfcStore.get_file())
         bpy.ops.bim.load_objectives()
         bpy.ops.bim.enable_editing_constraint(constraint=result.id())
         return {"FINISHED"}
@@ -119,9 +114,8 @@ class EditObjective(bpy.types.Operator):
         ifcopenshell.api.run(
             "constraint.edit_objective",
             self.file,
-            **{"objective": self.file.by_id(props.active_constraint_id), "attributes": attributes}
+            **{"objective": self.file.by_id(props.active_constraint_id), "attributes": attributes},
         )
-        Data.load(IfcStore.get_file())
         bpy.ops.bim.load_objectives()
         return {"FINISHED"}
 
@@ -141,7 +135,6 @@ class RemoveConstraint(bpy.types.Operator):
         ifcopenshell.api.run(
             "constraint.remove_constraint", self.file, **{"constraint": self.file.by_id(self.constraint)}
         )
-        Data.load(IfcStore.get_file())
         if props.is_editing == "IfcObjective":
             bpy.ops.bim.load_objectives()
         return {"FINISHED"}
@@ -186,21 +179,18 @@ class AssignConstraint(bpy.types.Operator):
         return IfcStore.execute_ifc_operator(self, context)
 
     def _execute(self, context):
-        self.file = IfcStore.get_file()
+        self.file = tool.Ifc.get()
         objs = [bpy.data.objects.get(self.obj)] if self.obj else context.selected_objects
-        for obj in objs:
-            obj_id = obj.BIMObjectProperties.ifc_definition_id
-            if not obj_id:
-                continue
+        products = [self.file.by_id(obj_id) for obj in objs if (obj_id := obj.BIMObjectProperties.ifc_definition_id)]
+        if products:
             ifcopenshell.api.run(
                 "constraint.assign_constraint",
                 self.file,
                 **{
-                    "product": self.file.by_id(obj_id),
+                    "products": products,
                     "constraint": self.file.by_id(self.constraint),
-                }
+                },
             )
-            Data.load(self.file, obj_id)
         return {"FINISHED"}
 
 
@@ -215,19 +205,16 @@ class UnassignConstraint(bpy.types.Operator):
         return IfcStore.execute_ifc_operator(self, context)
 
     def _execute(self, context):
-        self.file = IfcStore.get_file()
+        self.file = tool.Ifc.get()
         objs = [bpy.data.objects.get(self.obj)] if self.obj else context.selected_objects
-        for obj in objs:
-            obj_id = obj.BIMObjectProperties.ifc_definition_id
-            if not obj_id:
-                continue
+        products = [self.file.by_id(obj_id) for obj in objs if (obj_id := obj.BIMObjectProperties.ifc_definition_id)]
+        if products:
             ifcopenshell.api.run(
                 "constraint.unassign_constraint",
                 self.file,
                 **{
-                    "product": self.file.by_id(obj_id),
+                    "products": products,
                     "constraint": self.file.by_id(self.constraint),
-                }
+                },
             )
-            Data.load(self.file, obj_id)
         return {"FINISHED"}

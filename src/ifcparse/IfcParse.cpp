@@ -740,6 +740,8 @@ size_t IfcParse::IfcFile::load(unsigned entity_instance_name, const IfcParse::en
 					filler.push_back(ea);
 				} catch (IfcException& e) {
 					Logger::Message(Logger::LOG_ERROR, e.what());
+					// #4070 We didn't actually capture an aggregate entry, undo length increment.
+					return_value--;
 				}
 			} else {
 				filler.push_back(new TokenArgument(next));
@@ -827,8 +829,12 @@ ArgumentList::operator aggregate_of_instance::ptr() const {
 	aggregate_of_instance::ptr l ( new aggregate_of_instance() );
 	for (size_t i = 0; i < size_; ++i) {
 		// FIXME: account for $
-		IfcUtil::IfcBaseClass* entity = *list_[i];
-		l->push(entity);
+        try {
+            IfcUtil::IfcBaseClass *entity = *list_[i];
+            l->push(entity);
+        } catch (IfcException e) {
+            Logger::Error(e);
+        }
 	}
 	return l;
 }
@@ -981,6 +987,7 @@ EntityArgument::~EntityArgument() {
 	// For that purpose when parsed, the simple type instance is explicitly added to the
 	// file. The reason is we want parsed simply types to behave the same as constructed
 	// simple types.
+
 	// delete entity;
 }
 
@@ -1450,6 +1457,39 @@ void IfcEntityInstanceData::setArgument(size_t i, Argument* a, IfcUtil::Argument
 		new_attribute = copy;
 	}
 
+	bool inverses_handled = false;
+
+	/*
+	// #4474 This shaves us some milliseconds, but doesn't structurally change things.
+	if (this->file && attributes_[i] != 0 
+		&& attributes_[i]->type() == IfcUtil::Argument_AGGREGATE_OF_ENTITY_INSTANCE 
+		&& new_attribute->type() == IfcUtil::Argument_AGGREGATE_OF_ENTITY_INSTANCE
+		&& attributes_[i]->size() >= 16 && new_attribute->size() >= 16) {
+		aggregate_of_instance::ptr existing_aggregate = *attributes_[i];
+		aggregate_of_instance::ptr replacing_aggregate = *new_attribute;
+		std::set<IfcUtil::IfcBaseClass*> existing(existing_aggregate->begin(), existing_aggregate->end());
+		std::set<IfcUtil::IfcBaseClass*> replacing(replacing_aggregate->begin(), replacing_aggregate->end());
+		std::vector<IfcUtil::IfcBaseClass*> removed;
+		std::vector<IfcUtil::IfcBaseClass*> added;
+		std::set_difference(existing.begin(), existing.end(), replacing.begin(), replacing.end(), std::back_inserter(removed));
+		std::set_difference(replacing.begin(), replacing.end(), existing.begin(), existing.end(), std::back_inserter(added));
+		register_inverse_visitor visitor(*this->file, *this);
+		{
+			unregister_inverse_visitor visitor(*this->file, *this);
+			for (auto& inst : removed) {
+				visitor(inst, i);
+			}
+		}
+		{
+			register_inverse_visitor visitor(*this->file, *this);
+			for (auto& inst : added) {
+				visitor(inst, i);
+			}
+		}
+		inverses_handled = true;
+	}
+	*/
+
 	if (attributes_[i] != 0) {
 		Argument* current_attribute = attributes_[i];
 		if (this->file) {
@@ -1467,14 +1507,16 @@ void IfcEntityInstanceData::setArgument(size_t i, Argument* a, IfcUtil::Argument
 				}
 			}
 
-			// Deregister inverse indices in file
-			unregister_inverse_visitor visitor(*this->file, *this);
-			apply_individual_instance_visitor(current_attribute, i).apply(visitor);
+			if (!inverses_handled) {
+				// Deregister inverse indices in file
+				unregister_inverse_visitor visitor(*this->file, *this);
+				apply_individual_instance_visitor(current_attribute, i).apply(visitor);
+			}
 		}
 		delete attributes_[i];
 	}
 
-	if (this->file) {
+	if (this->file && !inverses_handled) {
 		// Register inverse indices in file
 		register_inverse_visitor visitor(*this->file, *this);
 		apply_individual_instance_visitor(new_attribute, i).apply(visitor);
@@ -1873,8 +1915,13 @@ IfcUtil::IfcBaseClass* IfcFile::addEntity(IfcUtil::IfcBaseClass* entity, int id)
 	// See whether the instance is already part of a file
 	if (entity->data().file != 0) {
 		if (entity->data().file == this) {
+			if (!entity->declaration().as_entity()) {
+				// While not a mapping that can be queried, we do need to free the instance later on
+				byidentity[new_entity->identity()] = new_entity;
+			}
+
 			// If it is part of this file
-			// nothing needs to be done.
+			// nothing else needs to be done.
 			return entity;
 		}
 
@@ -2078,6 +2125,9 @@ IfcUtil::IfcBaseClass* IfcFile::addEntity(IfcUtil::IfcBaseClass* entity, int id)
 		// pointer has to be set, so that actual copies are created in subsequent
 		// times.
 		new_entity->data().file = this;
+
+		// While not a mapping that can be queried, we do need to free the instance
+		byidentity[new_entity->identity()] = new_entity;
 	}
 
 	if (parsing_complete_ && ty->as_entity()) {
@@ -2227,7 +2277,7 @@ void IfcFile::process_deletion_() {
 			}
 		}
 
-		if (entity->declaration().is(*ifcroot_type_)) {
+		if (entity->declaration().is(*ifcroot_type_) && !entity->data().getArgument(0)->isNull()) {
 			const std::string global_id = *entity->data().getArgument(0);
 			auto it = byguid.find(global_id);
 			if (it != byguid.end()) {
@@ -2367,7 +2417,7 @@ IfcFile::~IfcFile() {
 	for (const auto& pair : byid) {
 		entities_to_delete.insert(pair.second);
 	}
-	for (const auto& pair : entity_file_map) {
+	for (const auto& pair : byidentity) {
 		entities_to_delete.insert(pair.second);
 	}
 	for (auto entity : entities_to_delete) {
@@ -2587,7 +2637,7 @@ std::pair<IfcUtil::IfcBaseClass*, double> IfcFile::getUnit(const std::string& un
 					);
 
 					IfcUtil::IfcBaseClass* unc = *mu->data().getArgument(
-						mu->declaration().as_entity()->attribute_index("ValueComponent")
+						mu->declaration().as_entity()->attribute_index("UnitComponent")
 					);
 
 					return_value.second *= static_cast<double>(*vlc->data().getArgument(0));

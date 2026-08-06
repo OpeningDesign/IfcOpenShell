@@ -17,62 +17,107 @@
 # along with BlenderBIM Add-on.  If not, see <http://www.gnu.org/licenses/>.
 
 import bpy
-from . import ui, prop, operator
+from . import ui, prop, operator, workspace, gizmo, decorator
 
 classes = (
+    operator.AppendEntireLibrary,
+    operator.AppendInspectedLinkedElement,
     operator.AppendLibraryElement,
+    operator.AppendLibraryElementByQuery,
     operator.AssignLibraryDeclaration,
+    operator.BIM_OT_load_clipping_planes,
+    operator.BIM_OT_save_clipping_planes,
     operator.ChangeLibraryElement,
+    operator.CreateClippingPlane,
     operator.CreateProject,
+    operator.DisableCulling,
     operator.DisableEditingHeader,
     operator.EditHeader,
+    operator.EnableCulling,
     operator.EnableEditingHeader,
     operator.ExportIFC,
-    operator.ImportIFC,
+    operator.ExportIFCDeprecated,
+    operator.FlipClippingPlane,
     operator.LinkIfc,
     operator.LoadLink,
+    operator.LoadLinkedProject,
     operator.LoadProject,
     operator.LoadProjectElements,
+    operator.NewProject,
+    operator.QueryLinkedElement,
+    operator.RefreshClippingPlanes,
     operator.RefreshLibrary,
+    operator.ReloadLink,
+    operator.RevertProject,
     operator.RewindLibrary,
     operator.SaveLibraryFile,
-    operator.AppendEntireLibrary,
     operator.SelectLibraryFile,
     operator.ToggleFilterCategories,
+    operator.ToggleLinkSelectability,
     operator.ToggleLinkVisibility,
     operator.UnassignLibraryDeclaration,
     operator.UnlinkIfc,
     operator.UnloadLink,
     operator.UnloadProject,
+    workspace.ExploreHotkey,
     prop.LibraryElement,
     prop.FilterCategory,
     prop.Link,
     prop.BIMProjectProperties,
+    ui.BIM_MT_new_project,
+    ui.BIM_MT_project,
     ui.BIM_PT_project,
     ui.BIM_PT_project_library,
     ui.BIM_PT_links,
+    ui.BIM_PT_purge,
     ui.BIM_UL_library,
     ui.BIM_UL_filter_categories,
     ui.BIM_UL_links,
+    gizmo.ClippingPlane,
 )
 
+if bpy.app.version >= (4, 1, 0):
+    classes += (
+        operator.IFCFileHandlerOperator,
+        operator.BIM_FH_import_ifc,
+    )
 
-def menu_func_export(self, context):
-    op = self.layout.operator(operator.ExportIFC.bl_idname, text="Industry Foundation Classes (.ifc/.ifczip/.ifcjson)")
-    op.should_save_as = True
-
-
-def menu_func_import(self, context):
-    self.layout.operator(operator.ImportIFC.bl_idname, text="Industry Foundation Classes (.ifc/.ifczip/.ifcxml)")
+addon_keymaps = []
 
 
 def register():
+    if not bpy.app.background:
+        bpy.utils.register_tool(workspace.ExploreTool, after={"builtin.transform"}, separator=True, group=False)
     bpy.types.Scene.BIMProjectProperties = bpy.props.PointerProperty(type=prop.BIMProjectProperties)
-    bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
-    bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
+    bpy.app.handlers.load_post.append(decorator.toggle_decorations_on_load)
+    bpy.types.TOPBAR_MT_file.prepend(ui.file_menu)
+    bpy.types.TOPBAR_MT_file_context_menu.prepend(ui.file_menu)
+    wm = bpy.context.window_manager
+    if wm.keyconfigs.addon:
+        km = wm.keyconfigs.addon.keymaps.get("Window")
+        if not km:
+            km = wm.keyconfigs.addon.keymaps.new("Window")
+        kmi = km.keymap_items.new("wm.call_menu", "N", "PRESS", ctrl=True)
+        kmi.properties.name = "BIM_MT_new_project"
+        addon_keymaps.append((km, kmi))
+
+        km = wm.keyconfigs.addon.keymaps.new(name="Window", space_type="EMPTY")
+        kmi = km.keymap_items.new("bim.save_project", "S", "PRESS", ctrl=True)
+        kmi.properties.should_save_as = False
+        addon_keymaps.append((km, kmi))
 
 
 def unregister():
-    bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
-    bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
+    if not bpy.app.background:
+        bpy.utils.unregister_tool(workspace.ExploreTool)
     del bpy.types.Scene.BIMProjectProperties
+    bpy.app.handlers.load_post.remove(decorator.toggle_decorations_on_load)
+    bpy.types.TOPBAR_MT_file.remove(ui.file_menu)
+    bpy.types.TOPBAR_MT_file_context_menu.remove(ui.file_menu)
+
+    wm = bpy.context.window_manager
+    kc = wm.keyconfigs.addon
+    if kc:
+        for km, kmi in addon_keymaps:
+            km.keymap_items.remove(kmi)
+    addon_keymaps.clear()

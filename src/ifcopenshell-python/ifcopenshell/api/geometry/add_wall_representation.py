@@ -18,29 +18,46 @@
 
 import ifcopenshell.util.unit
 from math import sin, cos
+from typing import Optional, Union, Any
+from ifcopenshell.util.data import Clipping
+
+
+def add_wall_representation(
+    file: ifcopenshell.file,
+    context: ifcopenshell.entity_instance,  # IfcGeometricRepresentationContext
+    # all lengths are in meters
+    length: float = 1.0,
+    height: float = 3.0,
+    offset: float = 0.0,
+    thickness: float = 0.2,
+    # Sloped walls along the wall's X axis, provided in radians
+    x_angle: float = 0.0,
+    # A list of planes that define clipping half space solids
+    # Planes are defined either by Clipping objects
+    # or by dictionaries of arguments for `Clipping.parse`
+    clippings: Optional[list[Union[Clipping, dict[str, Any]]]] = None,
+    # Any existing IfcBooleanResults
+    booleans: Optional[list[ifcopenshell.entity_instance]] = None,
+) -> ifcopenshell.entity_instance:
+    usecase = Usecase()
+    usecase.file = file
+    usecase.settings = {
+        "context": context,
+        "length": length,
+        "height": height,
+        "offset": offset,
+        "thickness": thickness,
+        "x_angle": x_angle,
+        "clippings": clippings if clippings is not None else [],
+        "booleans": booleans if booleans is not None else [],
+    }
+    return usecase.execute()
 
 
 class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {
-            "context": None,  # IfcGeometricRepresentationContext
-            "length": 1.0,
-            "height": 3.0,
-            "offset": 0.0,
-            "thickness": 0.2,
-            # Sloped walls along the wall's X axis, provided in radians
-            "x_angle": 0,
-            # Planes are defined as a matrix. The XY plane is the clipping boundary and +Z is removed.
-            # [{"type": "IfcBooleanClippingResult", "operand_type": "IfcHalfSpaceSolid", "matrix": [...]}, {...}]
-            "clippings": [],  # A list of planes that define clipping half space solids
-            "booleans": [],  # Any existing IfcBooleanResults
-        }
-        for key, value in settings.items():
-            self.settings[key] = value
-
     def execute(self):
         self.settings["unit_scale"] = ifcopenshell.util.unit.calculate_unit_scale(self.file)
+        self.settings["clippings"] = [Clipping.parse(c) for c in self.settings["clippings"]]
         return self.file.createIfcShapeRepresentation(
             self.settings["context"],
             self.settings["context"].ContextIdentifier,
@@ -51,6 +68,7 @@ class Usecase:
     def create_item(self):
         length = self.convert_si_to_unit(self.settings["length"])
         thickness = self.convert_si_to_unit(self.settings["thickness"])
+        thickness *= 1 / cos(self.settings["x_angle"])
         points = (
             (0.0, 0.0),
             (0.0, thickness),
@@ -76,7 +94,7 @@ class Usecase:
                 self.file.createIfcDirection((1.0, 0.0, 0.0)),
             ),
             extrusion_direction,
-            self.convert_si_to_unit(self.settings["height"]),
+            self.convert_si_to_unit(self.settings["height"]) * (1 / cos(self.settings["x_angle"])),
         )
         if self.settings["booleans"]:
             extrusion = self.apply_booleans(extrusion)
@@ -94,25 +112,12 @@ class Usecase:
     def apply_clippings(self, first_operand):
         while self.settings["clippings"]:
             clipping = self.settings["clippings"].pop()
-            if clipping["operand_type"] == "IfcHalfSpaceSolid":
-                matrix = clipping["matrix"]
-                second_operand = self.file.createIfcHalfSpaceSolid(
-                    self.file.createIfcPlane(
-                        self.file.createIfcAxis2Placement3D(
-                            self.file.createIfcCartesianPoint(
-                                (
-                                    self.convert_si_to_unit(matrix[0][3]),
-                                    self.convert_si_to_unit(matrix[1][3]),
-                                    self.convert_si_to_unit(matrix[2][3]),
-                                )
-                            ),
-                            self.file.createIfcDirection((matrix[0][2], matrix[1][2], matrix[2][2])),
-                            self.file.createIfcDirection((matrix[0][0], matrix[1][0], matrix[2][0])),
-                        )
-                    ),
-                    False,
-                )
-            first_operand = self.file.create_entity(clipping["type"], "DIFFERENCE", first_operand, second_operand)
+            if isinstance(clipping, ifcopenshell.entity_instance):
+                new = ifcopenshell.util.element.copy(self.file, clipping)
+                new.FirstOperand = first_operand
+                first_operand = new
+            else:  # Clipping
+                first_operand = clipping.apply(self.file, first_operand, self.settings["unit_scale"])
         return first_operand
 
     def convert_si_to_unit(self, co):

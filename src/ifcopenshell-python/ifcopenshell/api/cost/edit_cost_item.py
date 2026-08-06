@@ -15,15 +15,34 @@
 #
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
+import ifcopenshell
+from typing import Any
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"cost_item": None, "attributes": {}}
-        for key, value in settings.items():
-            self.settings[key] = value
+def edit_cost_item(
+    file: ifcopenshell.file, cost_item: ifcopenshell.entity_instance, attributes: dict[str, Any]
+) -> None:
+    """Edits the attributes of an IfcCostItem
 
-    def execute(self):
-        for name, value in self.settings["attributes"].items():
-            setattr(self.settings["cost_item"], name, value)
+    For more information about the attributes and data types of an
+    IfcCostItem, consult the IFC documentation.
+
+    :param cost_item: The IfcCostItem entity you want to edit
+    :type cost_item: ifcopenshell.entity_instance
+    :param attributes: a dictionary of attribute names and values.
+    :type attributes: dict
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        schedule = ifcopenshell.api.run("cost.add_cost_schedule", model)
+        item = ifcopenshell.api.run("cost.add_cost_item", model, cost_schedule=schedule)
+        ifcopenshell.api.run("cost.edit_cost_item", model, cost_item=item, attributes={"Name": "Foo"})
+    """
+    settings = {"cost_item": cost_item, "attributes": attributes or {}}
+
+    for name, value in settings["attributes"].items():
+        setattr(settings["cost_item"], name, value)

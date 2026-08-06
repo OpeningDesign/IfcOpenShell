@@ -15,14 +15,33 @@
 #
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
+import ifcopenshell
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"ifc_class": None}
-        for key, value in settings.items():
-            self.settings[key] = value
+def add_parameterized_profile(file: ifcopenshell.file, ifc_class: str) -> ifcopenshell.entity_instance:
+    """Adds a new parameterised profile
 
-    def execute(self):
-        return self.file.create_entity(self.settings["ifc_class"])
+    IFC offers parameterised profiles for common standardised hot roll
+    steel sections and common concrete forms. A full list is available on
+    the IFC documentation as subclasses of IfcParameterizedProfileDef.
+
+    Currently, this API has no benefit over directly calling
+    ifcopenshell.file.create_entity.
+
+    :param ifc_class: The subclass of IfcParameterizedProfileDef that you'd
+        like to create.
+    :type ifc_class: str
+    :return: The newly created element depending on the specified ifc_class.
+    :rtype: ifcopenshell.entity_instance
+
+    Example:
+
+    .. code:: python
+
+        circle = ifcopenshell.api.run("profile.add_parameterized_profile", model,
+            ifc_class="IfcCircleProfileDef")
+        circle.Radius = 1.
+    """
+    settings = {"ifc_class": ifc_class}
+
+    return file.create_entity(settings["ifc_class"])

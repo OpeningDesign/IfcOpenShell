@@ -17,20 +17,12 @@
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
 
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import random
 import operator
 import warnings
 
 from collections import namedtuple
-
-try:  # python 3.3+
-    from collections.abc import Iterable
-except ImportError:  # python 2
-    from collections import Iterable
+from collections.abc import Iterable
 
 import OCC
 
@@ -203,8 +195,8 @@ def display_shape(shape, clr=None, viewer_handle=None):
     return ais_handle
 
 
-def set_shape_transparency(ais, t):
-    handle.Context.SetTransparency(ais, t)
+def set_shape_transparency(ais, t, update_viewer=True):
+    handle.Context.SetTransparency(ais, t, update_viewer)
 
 
 def get_bounding_box_center(bbox):
@@ -216,6 +208,11 @@ def get_bounding_box_center(bbox):
 
 def serialize_shape(shape):
     shapes = BRepTools.BRepTools_ShapeSet()
+
+    # @todo provide method to get ifcopenshell's built-in occt version to
+    # see whether this is necessary
+    shapes.SetFormatNb(2)
+
     shapes.Add(shape)
     return shapes.WriteToString()
 

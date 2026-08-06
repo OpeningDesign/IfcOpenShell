@@ -16,20 +16,21 @@
 # You should have received a copy of the GNU General Public License
 # along with BlenderBIM Add-on.  If not, see <http://www.gnu.org/licenses/>.
 
-from types import ClassMethodDescriptorType
 import bpy
 import blenderbim.core.tool
+import blenderbim.bim.schema
 import blenderbim.tool as tool
 import ifcopenshell
+import ifcopenshell.util.unit
+import ifcopenshell.util.element
 from mathutils import Vector
-from ifcopenshell import util
-from blenderbim.bim.module.pset.qto_calculator import QtoCalculator
+from typing import Optional, Union, Literal
 
-
+QuantityTypes = Literal["Q_LENGTH", "Q_AREA", "Q_VOLUME"]
 
 class Qto(blenderbim.core.tool.Qto):
     @classmethod
-    def get_radius_of_selected_vertices(cls, obj):
+    def get_radius_of_selected_vertices(cls, obj: bpy.types.Object) -> float:
         selected_verts = [v.co for v in obj.data.vertices if v.select]
         total = Vector()
         for v in selected_verts:
@@ -38,107 +39,121 @@ class Qto(blenderbim.core.tool.Qto):
         return max([(v - circle_center).length for v in selected_verts])
 
     @classmethod
-    def set_qto_result(cls, result):
+    def set_qto_result(cls, result: float) -> None:
         bpy.context.scene.BIMQtoProperties.qto_result = str(round(result, 3))
 
     @classmethod
-    def get_pset_qto_object_ifc_info(cls, obj):
-        element = tool.Ifc.get_entity(obj)
-        pset_qto_ifc_info = ifcopenshell.util.element.get_psets(element, qtos_only = True)
-        return pset_qto_ifc_info
-
-    @classmethod
-    def get_pset_qto_properties(cls, obj):
-        file = tool.Ifc.get()
-        schema = file.schema
-        pset_qto = util.pset.PsetQto(schema)
-        pset_qto_name = cls.get_pset_qto_name(obj)
-        pset_qto_properties = pset_qto.get_by_name(pset_qto_name).get_info()['HasPropertyTemplates']
-        return pset_qto_properties
-
-    @classmethod
-    def get_pset_qto_name(cls, obj):
-        applicable_pset_names = cls.get_applicable_pset_names(obj)
-        for applicable_pset_name in applicable_pset_names:
-            if 'Qto_' in applicable_pset_name:
-                pset_qto_name = applicable_pset_name
-                return pset_qto_name
-
-    @classmethod
-    def get_applicable_pset_names(cls, obj):
-        file = tool.Ifc.get()
-        schema = file.schema
-        pset_qto = util.pset.PsetQto(schema)
-        entity = tool.Ifc.get_entity(obj)
-        ifc_object_type = entity.get_info()['type']
-        applicable_pset_names = pset_qto.get_applicable_names(ifc_object_type)
-        return applicable_pset_names
-
-    @classmethod
-    def edit_qto(cls, obj, calculated_quantities):
-        file = tool.Ifc.get()
-        pset_qto_id = cls.get_pset_qto_id(obj)
-        pset_qto_name = cls.get_pset_qto_name(obj)
-
-        ifcopenshell.api.run("pset.edit_qto",
-                file,
-                **{"qto" : pset_qto_id, "name" : pset_qto_name, "properties": calculated_quantities}
-            )
-
-    @classmethod
-    def get_pset_qto_id(cls, obj):
-        file = tool.Ifc.get()
-        pset_qto_name = cls.get_pset_qto_name(obj)
-        pset_qto_object_ifc_info = cls.get_pset_qto_object_ifc_info(obj)
-        pset_qto_id = file.by_id(pset_qto_object_ifc_info[pset_qto_name]['id'])
-        return pset_qto_id
-
-    @classmethod
-    def get_pset_qto_name(cls, obj):
-        applicable_pset_names = cls.get_applicable_pset_names(obj)
-        for applicable_pset_name in applicable_pset_names:
-            if 'Qto_' in applicable_pset_name:
-                pset_qto_name = applicable_pset_name
-                return pset_qto_name
-
-    @classmethod
-    def get_new_quantity(cls, obj, quantity_name, alternative_prop_names):
-        calculator = QtoCalculator()
-        new_quantity = calculator.guess_quantity(quantity_name, alternative_prop_names, obj)
-        return new_quantity
-
-    @classmethod
-    def get_rounded_value(cls, new_quantity):
+    def get_rounded_value(cls, new_quantity: float) -> float:
         return round(new_quantity, 3)
 
     @classmethod
-    def get_calculated_quantities(cls, obj, pset_qto_properties):
-        calculated_quantities = {}
-        for pset_qto_property in pset_qto_properties:
-            quantity_name = pset_qto_property.get_info()['Name']
-            alternative_prop_names = [p.get_info()['Name'] for p in pset_qto_properties]
+    def convert_to_project_units(
+        cls,
+        value: float,
+        qto_name: Optional[str] = None,
+        quantity_name: Optional[str] = None,
+        quantity_type: Optional[QuantityTypes] = None,
+    ) -> Union[float, None]:
+        """You can either specify `quantity_type` or provide `qto_name/quantity_name`
+        to let method figure the `quantity_type` from the templates
+        """
+        ifc_file = tool.Ifc.get()
+        quantity_to_unit_types = {
+            "Q_LENGTH": ("LENGTHUNIT", "METRE"),
+            "Q_AREA": ("AREAUNIT", "SQUARE_METRE"),
+            "Q_VOLUME": ("VOLUMEUNIT", "CUBIC_METRE"),
+        }
+        if not quantity_type:
+            qt = blenderbim.bim.schema.ifc.psetqto.get_by_name(qto_name)
+            quantity_type = next(q.TemplateType for q in qt.HasPropertyTemplates if q.Name == quantity_name)
 
-            new_quantity = cls.get_new_quantity(obj, quantity_name, alternative_prop_names)
+        unit_type = quantity_to_unit_types.get(quantity_type, None)
+        if not unit_type:
+            return
 
-            if not new_quantity:
-                new_quantity = 0
-            else:
-                new_quantity = cls.get_rounded_value(new_quantity)
-
-            calculated_quantities[quantity_name] = new_quantity
-
-        return calculated_quantities
+        unit_type, base_unit = unit_type
+        project_unit = ifcopenshell.util.unit.get_project_unit(ifc_file, unit_type)
+        if not project_unit:
+            return
+        value = ifcopenshell.util.unit.convert(
+            value,
+            from_prefix=None,
+            from_unit=base_unit,
+            to_prefix=getattr(project_unit, "Prefix", None),
+            to_unit=project_unit.Name,
+        )
+        return value
 
     @classmethod
-    def assign_pset_qto_to_selected_object(cls, obj):
-        file = tool.Ifc.get()
-        entity = tool.Ifc.get_entity(obj)
-        pset_qto_name = cls.get_pset_qto_name(obj)
-        ifcopenshell.api.run(
-            "pset.add_qto",
-            file,
-            **{
-                "product": entity,
-                "name": pset_qto_name,
-            },
-        )
+    def get_base_qto(cls, product: ifcopenshell.entity_instance) -> Union[ifcopenshell.entity_instance, None]:
+        if not hasattr(product, "IsDefinedBy"):
+            return
+        base_qto_definition = None
+        base_qto_definition_name: Union[str, None] = None
+        for rel in product.IsDefinedBy or []:
+            definition = rel.RelatingPropertyDefinition
+            if not rel.is_a("IfcRelDefinesByProperties"):
+                continue
+            definition = rel.RelatingPropertyDefinition
+            definition_name = definition.Name
+            if "Qto_" not in definition_name:
+                continue
+            if "Base" in definition_name:
+                return definition
+            if base_qto_definition and "BodyGeometryValidation" not in base_qto_definition_name:
+                continue
+            base_qto_definition = definition
+            base_qto_definition_name = definition_name
+        return base_qto_definition
+
+    @classmethod
+    def get_related_cost_item_quantities(cls, product: ifcopenshell.entity_instance) -> list[dict]:
+        """_summary_: Returns the related cost item and related quantities of the product
+
+        :param ifc-instance product: ifc instance
+        :type product: ifcopenshell.entity_instance.entity_instance
+
+        :return list of dictionaries in the form [
+        {
+        "cost_item_id" : XX,
+        "cost_item_name" : XX,
+        "quantity_id" : XX,
+        "quantity_name" : XX,
+        "quantity_value" : XX,
+        "quantity_type" : XX
+        }]
+        :rtype: list
+
+        Example:
+
+        .. code::Python
+        import blenderbim.tool as tool
+
+        relating_cost_items = tool.Qto.relating_cost_items(my_beautiful_wall)
+        for relating_cost_item in relating_cost_items:
+            print(f"RELATING COST ITEM NAME: {relating_cost_item["cost_item_name"]}")
+            print(f"RELATING COST QUANTITY NAME: {relating_cost_item["quantity_name"]}")
+            ...
+        """
+        model = tool.Ifc.get()
+        cost_items = model.by_type("IfcCostItem")
+        result = []
+        base_qto = cls.get_base_qto(product)
+        quantities = base_qto.Quantities if base_qto else []
+
+        for cost_item in cost_items:
+            cost_item_quantities = cost_item.CostQuantities if cost_item.CostQuantities is not None else []
+            for cost_item_quantity in cost_item_quantities:
+                for quantity in quantities:
+                    if quantity == cost_item_quantity:
+                        result.append(
+                            {
+                                "cost_item_id": cost_item.id(),
+                                "cost_item_name": cost_item.Name,
+                                "quantity_id": quantity.id(),
+                                "quantity_name": quantity.Name,
+                                "quantity_value": quantity[3],
+                                "quantity_type": quantity.is_a(),
+                            }
+                        )
+        return result

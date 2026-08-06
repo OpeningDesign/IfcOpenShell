@@ -16,11 +16,12 @@
 # You should have received a copy of the GNU General Public License
 # along with BlenderBIM Add-on.  If not, see <http://www.gnu.org/licenses/>.
 
+import os
 import bpy
 import ifcopenshell.util.placement
 from blenderbim.bim.module.project.data import ProjectData
 from blenderbim.bim.ifc import IfcStore
-from blenderbim.bim.prop import StrProperty
+from blenderbim.bim.prop import StrProperty, ObjProperty
 from bpy.types import PropertyGroup
 from bpy.props import (
     PointerProperty,
@@ -43,6 +44,19 @@ def get_template_file(self, context):
     if not ProjectData.is_loaded:
         ProjectData.load()
     return ProjectData.data["template_file"]
+
+
+def get_library_file(self, context):
+    if not ProjectData.is_loaded:
+        ProjectData.load()
+    return ProjectData.data["library_file"]
+
+
+def update_library_file(self, context):
+    if self.library_file != "0":
+        bpy.ops.bim.select_library_file(
+            filepath=os.path.join(bpy.context.scene.BIMProperties.data_dir, "libraries", self.library_file)
+        )
 
 
 def update_filter_mode(self, context):
@@ -93,12 +107,12 @@ class FilterCategory(PropertyGroup):
 class Link(PropertyGroup):
     name: StringProperty(name="Name")
     is_loaded: BoolProperty(name="Is Loaded", default=False)
+    is_selectable: BoolProperty(name="Is Selectable", default=True)
     is_wireframe: BoolProperty(name="Is Wireframe", default=False)
     is_hidden: BoolProperty(name="Is Hidden", default=False)
 
 
 class BIMProjectProperties(PropertyGroup):
-    is_authoring: BoolProperty(name="Enable Authoring Mode", default=True)
     is_editing: BoolProperty(name="Is Editing", default=False)
     is_loading: BoolProperty(name="Is Loading", default=False)
     mvd: StringProperty(name="MVD")
@@ -149,14 +163,25 @@ class BIMProjectProperties(PropertyGroup):
         default="NONE",
     )
     should_merge_materials_by_colour: BoolProperty(name="Merge Materials by Colour", default=False)
+    should_stream: BoolProperty(name="Stream Data From IFC-SPF (Only for advanced users)", default=False)
+    should_load_geometry: BoolProperty(name="Load Geometry", default=True)
     should_use_native_meshes: BoolProperty(name="Native Meshes", default=False)
-    should_clean_mesh: BoolProperty(name="Clean Meshes", default=True)
+    should_clean_mesh: BoolProperty(name="Clean Meshes", default=False)
     should_cache: BoolProperty(name="Cache", default=False)
     is_coordinating: BoolProperty(name="For Coordination Only", default=False)
     deflection_tolerance: FloatProperty(name="Deflection Tolerance", default=0.001)
     angular_tolerance: FloatProperty(name="Angular Tolerance", default=0.5)
-    distance_limit: FloatProperty(name="Distance Limit", default=1000)
-    false_origin: StringProperty(name="False Origin", default="0,0,0")
+    void_limit: IntProperty(name="Void Limit", default=30)
+    distance_limit: FloatProperty(name="Distance Limit", default=1000, subtype="DISTANCE")
+    false_origin: StringProperty(
+        name="False Origin",
+        description=(
+            "False origin that will be used to offset the entire model.\n"
+            "(0,0,0) value is interpreted as an unset false origin - false origin will be guessed based on Distance Limit.\n"
+            "False origin is defined in project units"
+        ),
+        default="0,0,0",
+    )
     element_offset: IntProperty(name="Element Offset", default=0)
     element_limit: IntProperty(name="Element Offset", default=30000)
     should_disable_undo_on_save: BoolProperty(
@@ -166,6 +191,15 @@ class BIMProjectProperties(PropertyGroup):
     active_link_index: IntProperty(name="Active Link Index")
     export_schema: EnumProperty(items=get_export_schema, name="IFC Schema")
     template_file: EnumProperty(items=get_template_file, name="Template File")
+    library_file: EnumProperty(items=get_library_file, name="Library File", update=update_library_file)
+    use_relative_project_path: BoolProperty(name="Use Relative Project Path", default=False)
+    queried_obj: bpy.props.PointerProperty(type=bpy.types.Object)
+    clipping_planes: bpy.props.CollectionProperty(type=ObjProperty)
+    clipping_planes_active: bpy.props.IntProperty(min=0, default=0, max=5)
+
+    @property
+    def clipping_planes_objs(self):
+        return list({cp.obj for cp in self.clipping_planes if cp.obj})
 
     def get_library_element_index(self, lib_element):
         return next((i for i in range(len(self.library_elements)) if self.library_elements[i] == lib_element))

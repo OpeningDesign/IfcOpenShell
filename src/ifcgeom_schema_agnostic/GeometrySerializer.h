@@ -49,8 +49,11 @@ public:
 		/// Use Y UP .
 		/// Applicable for OBJ output.
 		USE_Y_UP = 1ULL << (IfcGeom::IteratorSettings::NUM_SETTINGS + 7ULL),
+		/// Write in ECEF coordinates.
+		/// Applicable to glTF output
+		WRITE_GLTF_ECEF = 1ULL << (IfcGeom::IteratorSettings::NUM_SETTINGS + 8ULL),
 		/// Number of different setting flags.
-        NUM_SETTINGS = 7
+		NUM_SETTINGS = 8
     };
 
     SerializerSettings()
@@ -74,6 +77,7 @@ public:
 
 	stream_or_filename(const std::string& fn)
 		: ofs_(new std::ofstream(IfcUtil::path::from_utf8(fn).c_str()))
+		, filename_(fn)
 		, stream(*ofs_)
 	{}
 

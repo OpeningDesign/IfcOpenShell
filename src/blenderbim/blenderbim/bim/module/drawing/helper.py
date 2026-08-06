@@ -120,9 +120,9 @@ class BoundingBox:
 
 # This function stolen from https://github.com/kevancress/MeasureIt_ARCH/blob/dcf607ce0896aa2284463c6b4ae9cd023fc54cbe/measureit_arch_baseclass.py
 # MeasureIt-ARCH is GPL-v3
-# In the future I will need to rewrite this to allow the user to have custom
-# settings for each annotation object, not read from Blender.
-def format_distance(value, isArea=False, hide_units=True):
+def format_distance(
+    value, isArea=False, hide_units=True, precision=None, decimal_places=None, suppress_zero_inches=False
+):
     s_code = "\u00b2"  # Superscript two THIS IS LEGACY (but being kept for when Area Measurements are re-implimented)
 
     # Get Scene Unit Settings
@@ -131,7 +131,7 @@ def format_distance(value, isArea=False, hide_units=True):
     unit_length = bpy.context.scene.unit_settings.length_unit
 
     toInches = 39.3700787401574887
-    inPerFoot = 11.999
+    inPerFoot = 11.9999
 
     if isArea:
         toInches = 1550
@@ -141,8 +141,7 @@ def format_distance(value, isArea=False, hide_units=True):
 
     # Imperial Formatting
     if unit_system == "IMPERIAL":
-        precision = bpy.context.scene.BIMProperties.imperial_precision
-        if precision == "NONE":
+        if not precision:
             precision = 256
         elif precision == "1":
             precision = 1
@@ -155,13 +154,14 @@ def format_distance(value, isArea=False, hide_units=True):
         # Separate ft and inches
         # Unless Inches are the specified Length Unit
         if unit_length != "INCHES":
-            feet = math.floor(decInches / inPerFoot)
+            feet = int(decInches / inPerFoot)  # remove decimal
             decInches -= feet * inPerFoot
         else:
             feet = 0
 
         # Separate Fractional Inches
-        inches = math.floor(decInches)
+        decInches = abs(decInches)  # ignore the sign for inches
+        inches = math.floor(decInches)  # remove decimal
         if inches != 0:
             frac = round(base * (decInches - inches))
         else:
@@ -182,48 +182,59 @@ def format_distance(value, isArea=False, hide_units=True):
 
         # Check values and compose string
         if inches == 12:
-            feet += 1
-            inches = 0
+            if unit_length == "INCHES":
+                inches = 12
+            if unit_length == "FEET":
+                feet += 1
+                inches = 0
 
         if not isArea:
+            add_inches = bool(inches) or not suppress_zero_inches
             tx_dist = ""
             if feet:
                 tx_dist += str(feet) + "'"
-            if feet and inches:
+            if feet and add_inches:
                 tx_dist += " - "
-            if inches:
+            if not feet and value < 0:
+                tx_dist += "-"
+            if add_inches:
                 tx_dist += str(inches)
-            if inches and frac:
+            if add_inches and frac:
                 tx_dist += " "
             if frac:
                 tx_dist += str(frac) + "/" + str(base)
-            if inches or frac:
+            if add_inches or frac:
                 tx_dist += '"'
         else:
             tx_dist = str("%1.3f" % (value * toInches / inPerFoot)) + " sq. ft."
 
     # METRIC FORMATTING
     elif unit_system == "METRIC":
-        precision = bpy.context.scene.BIMProperties.metric_precision
-        if precision != 0:
+        if precision:
             value = precision * round(float(value) / precision)
+
+        if decimal_places is not None:
+            fmt = "%1." + str(decimal_places) + "f"
 
         # Meters
         if unit_length == "METERS":
-            fmt = "%1.3f"
+            if decimal_places is None:
+                fmt = "%1.3f"
             if hide_units is False:
                 fmt += " m"
             tx_dist = fmt % value
         # Centimeters
         elif unit_length == "CENTIMETERS":
-            fmt = "%1.1f"
+            if decimal_places is None:
+                fmt = "%1.1f"
             if hide_units is False:
                 fmt += " cm"
             d_cm = value * (100)
             tx_dist = fmt % d_cm
         # Millimeters
         elif unit_length == "MILLIMETERS":
-            fmt = "%1.0f"
+            if decimal_places is None:
+                fmt = "%1.0f"
             if hide_units is False:
                 fmt += " mm"
             d_mm = value * (1000)
@@ -231,20 +242,21 @@ def format_distance(value, isArea=False, hide_units=True):
 
         # Otherwise Use Adaptive Units
         else:
-            if round(value, 2) >= 1.0:
+            if round(value, 2) >= 1.0 and decimal_places is None:
                 fmt = "%1.3f"
                 if hide_units is False:
                     fmt += " m"
                 tx_dist = fmt % value
             else:
-                if round(value, 2) >= 0.01:
+                if round(value, 2) >= 0.01 and decimal_places is None:
                     fmt = "%1.1f"
                     if hide_units is False:
                         fmt += " cm"
                     d_cm = value * (100)
                     tx_dist = fmt % d_cm
                 else:
-                    fmt = "%1.0f"
+                    if decimal_places is None:
+                        fmt = "%1.0f"
                     if hide_units is False:
                         fmt += " mm"
                     d_mm = value * (1000)
@@ -262,7 +274,7 @@ def get_active_drawing(scene):
     props = scene.DocProperties
     try:
         camera = tool.Ifc.get_object(tool.Ifc.get().by_id(props.active_drawing_id))
-        return camera.users_collection[0], camera
+        return camera.BIMObjectProperties.collection, camera
     except:
         return None, None
 
@@ -286,7 +298,9 @@ def parse_diagram_scale(camera):
     return float(numerator) / float(denominator)
 
 
-def ortho_view_frame(camera, margin=0.015):
+def ortho_view_frame(
+    camera: bpy.types.Camera, margin: float = 0.015
+) -> tuple[float, float, float, float, float, float]:
     """Calculates 2d bounding box of camera view area.
 
     Similar to `bpy.types.Camera.view_frame`

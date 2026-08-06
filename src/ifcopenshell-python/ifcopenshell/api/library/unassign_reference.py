@@ -16,23 +16,71 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
 
+import ifcopenshell
+import ifcopenshell.util.element
+import ifcopenshell.api
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"reference": None, "product": None}
-        for key, value in settings.items():
-            self.settings[key] = value
 
-    def execute(self):
-        rels = self.settings["reference"].LibraryRefForObjects
-        if not rels:
-            return
-        for rel in rels:
-            if self.settings["product"] in rel.RelatedObjects:
-                if len(rel.RelatedObjects) == 1:
-                    self.file.remove(rel)
-                    continue
-                related_objects = list(rel.RelatedObjects)
-                related_objects.remove(self.settings["product"])
-                rel.RelatedObjects = related_objects
+def unassign_reference(
+    file: ifcopenshell.file,
+    reference: ifcopenshell.entity_instance,
+    products: list[ifcopenshell.entity_instance],
+) -> None:
+    """Unassigns a product of products from a reference
+
+    If the product isn't assigned to the reference, nothing will happen.
+
+    :param reference: The IfcLibraryReference to unassign from
+    :type reference: ifcopenshell.entity_instance
+    :param products: A list of IfcProduct elements to unassign from the reference
+    :type products: list[ifcopenshell.entity_instance]
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        library = ifcopenshell.api.run("library.add_library", model, name="Brickschema")
+
+        # Let's create a reference to a single AHU in our Brickschema dataset
+        reference = ifcopenshell.api.run("library.add_reference", model, library=library)
+        ifcopenshell.api.run("library.edit_reference", model,
+            reference=reference, attributes={"Identification": "http://example.org/digitaltwin#AHU01"})
+
+        # Let's assume we have an AHU in our model.
+        ahu = ifcopenshell.api.run("root.create_entity", model,
+            ifc_class="IfcUnitaryEquipment", predefined_type="AIRHANDLER")
+
+        # And now assign the IFC model's AHU with its Brickschema counterpart
+        ifcopenshell.api.run("library.assign_reference", model, reference=reference, products=[ahu])
+
+        # Let's change our mind and unassign it.
+        ifcopenshell.api.run("library.unassign_reference", model, reference=reference, products=[ahu])
+    """
+
+    settings = {"reference": reference, "products": products}
+
+    # TODO: do we need to support non-ifcroot elements like we do in classification.add_reference?
+
+    reference_rels: set[ifcopenshell.entity_instance] = set()
+    products = set(settings["products"])
+    for product in products:
+        reference_rels.update(product.HasAssociations)
+
+    reference_rels = {
+        rel
+        for rel in reference_rels
+        if rel.is_a("IfcRelAssociatesLibrary") and rel.RelatingLibrary == settings["reference"]
+    }
+
+    for rel in reference_rels:
+        related_objects = set(rel.RelatedObjects) - products
+        if related_objects:
+            rel.RelatedObjects = list(related_objects)
+            ifcopenshell.api.run("owner.update_owner_history", file, **{"element": rel})
+        else:
+            history = rel.OwnerHistory
+            file.remove(rel)
+            if history:
+                ifcopenshell.util.element.remove_deep2(file, history)

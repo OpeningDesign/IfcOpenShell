@@ -18,6 +18,7 @@
 
 import bpy
 import importlib
+import importlib.util
 from pathlib import Path
 import ifcpatch
 from blenderbim.bim.prop import StrProperty, Attribute
@@ -53,7 +54,7 @@ def get_ifcpatch_recipes(self, context):
                 continue
             docs = ifcpatch.extract_docs(f, "Patcher", "__init__", ("src", "file", "logger", "args"))
             ifcpatchrecipes_enum.append((f, f, docs.get("description", "") if docs else ""))
-    return ifcpatchrecipes_enum
+    return sorted(ifcpatchrecipes_enum, key=lambda x: x[0])
 
 
 def update_ifc_patch_recipe(self, context):
@@ -66,3 +67,4 @@ class BIMPatchProperties(PropertyGroup):
     ifc_patch_output: StringProperty(default="", name="IFC Patch Output IFC")
     ifc_patch_args: StringProperty(default="", name="Arguments")
     ifc_patch_args_attr: CollectionProperty(type=Attribute, name="Arguments")
+    should_load_from_memory: BoolProperty(default=False, name="Load from Memory")

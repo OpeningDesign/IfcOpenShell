@@ -17,7 +17,7 @@
 # along with BlenderBIM Add-on.  If not, see <http://www.gnu.org/licenses/>.
 
 import blenderbim.core.material as subject
-from test.core.bootstrap import ifc, material, style
+from test.core.bootstrap import ifc, material, style, spatial
 
 
 class TestUnlinkMaterial:
@@ -28,13 +28,13 @@ class TestUnlinkMaterial:
 
 class TestAddMaterial:
     def test_add_a_default_material(self, ifc, material, style):
-        material.add_default_material_object().should_be_called().will_return("obj")
+        material.add_default_material_object("name").should_be_called().will_return("obj")
         material.get_name("obj").should_be_called().will_return("name")
         ifc.run("material.add_material", name="name").should_be_called().will_return("material")
         ifc.link("material", "obj").should_be_called()
         style.get_style("obj").should_be_called().will_return(None)
         material.is_editing_materials().should_be_called().will_return(False)
-        assert subject.add_material(ifc, material, style) == "material"
+        assert subject.add_material(ifc, material, style, name="name") == "material"
 
     def test_add_a_material_to_a_blender_material_object(self, ifc, material, style):
         material.get_name("obj").should_be_called().will_return("name")
@@ -94,6 +94,7 @@ class TestAddMaterialSet:
 
 class TestRemoveMaterial:
     def test_removing_a_material(self, ifc, material, style):
+        material.is_material_used_in_sets("material").should_be_called().will_return(False)
         ifc.get_object("material").should_be_called().will_return(None)
         ifc.unlink(element="material").should_be_called()
         ifc.run("material.remove_material", material="material").should_be_called()
@@ -101,6 +102,7 @@ class TestRemoveMaterial:
         subject.remove_material(ifc, material, style, material="material")
 
     def test_removing_a_material_and_reloading_imported_materials(self, ifc, material, style):
+        material.is_material_used_in_sets("material").should_be_called().will_return(False)
         ifc.get_object("material").should_be_called().will_return(None)
         ifc.unlink(element="material").should_be_called()
         ifc.run("material.remove_material", material="material").should_be_called()
@@ -110,6 +112,7 @@ class TestRemoveMaterial:
         subject.remove_material(ifc, material, style, material="material")
 
     def test_removing_a_material_object_if_it_has_no_style(self, ifc, material, style):
+        material.is_material_used_in_sets("material").should_be_called().will_return(False)
         ifc.get_object("material").should_be_called().will_return("obj")
         ifc.unlink(element="material").should_be_called()
         ifc.run("material.remove_material", material="material").should_be_called()
@@ -119,11 +122,16 @@ class TestRemoveMaterial:
         subject.remove_material(ifc, material, style, material="material")
 
     def test_preserving_a_material_object_if_it_is_still_used_as_a_style(self, ifc, material, style):
+        material.is_material_used_in_sets("material").should_be_called().will_return(False)
         ifc.get_object("material").should_be_called().will_return("obj")
         ifc.unlink(element="material").should_be_called()
         ifc.run("material.remove_material", material="material").should_be_called()
         style.get_style("obj").should_be_called().will_return("style")
         material.is_editing_materials().should_be_called().will_return(False)
+        subject.remove_material(ifc, material, style, material="material")
+
+    def test_not_removing_a_material_if_it_is_used_in_a_material_set(self, ifc, material, style):
+        material.is_material_used_in_sets("material").should_be_called().will_return(True)
         subject.remove_material(ifc, material, style, material="material")
 
 
@@ -150,7 +158,7 @@ class TestDisableEditingMaterials:
 
 
 class TestSelectByMaterial:
-    def test_run(self, material):
+    def test_run(self, material, spatial):
         material.get_elements_by_material("material").should_be_called().will_return("elements")
-        material.select_elements("elements").should_be_called()
-        subject.select_by_material(material, material="material")
+        spatial.select_products("elements").should_be_called()
+        subject.select_by_material(material, spatial, material="material")

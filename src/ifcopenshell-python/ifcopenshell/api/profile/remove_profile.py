@@ -16,14 +16,33 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
 
+import ifcopenshell
+import ifcopenshell.util.element
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"profile": None}
-        for key, value in settings.items():
-            self.settings[key] = value
 
-    def execute(self):
-        self.file.remove(self.settings["profile"])
-        # TODO: deep purge
+def remove_profile(file: ifcopenshell.file, profile: ifcopenshell.entity_instance) -> None:
+    """Removes a profile
+
+    :param profile: The IfcProfileDef to remove.
+    :type profile: ifcopenshell.entity_instance
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        circle = ifcopenshell.api.run("profile.add_parameterized_profile", model,
+            ifc_class="IfcCircleProfileDef")
+        circle = 1.
+        ifcopenshell.api.run("profile.remove_profile", model, profile=circle)
+    """
+    settings = {"profile": profile}
+
+    subelements = set()
+    for attribute in settings["profile"]:
+        if isinstance(attribute, ifcopenshell.entity_instance):
+            subelements.add(attribute)
+    file.remove(settings["profile"])
+    for subelement in subelements:
+        ifcopenshell.util.element.remove_deep2(file, subelement)

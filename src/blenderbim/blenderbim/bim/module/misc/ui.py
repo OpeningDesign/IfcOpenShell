@@ -22,15 +22,15 @@ import bpy
 class BIM_PT_misc_utilities(bpy.types.Panel):
     bl_idname = "BIM_PT_misc_utilities"
     bl_label = "Miscellaneous"
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "output"
     bl_options = {"DEFAULT_CLOSED"}
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "BlenderBIM"
+    bl_parent_id = "BIM_PT_tab_sandbox"
 
     def draw(self, context):
         layout = self.layout
         props = context.scene.BIMMiscProperties
-
         row = layout.split(factor=0.2, align=True)
         row.prop(props, "override_colour", text="")
         row.operator("bim.set_override_colour")
@@ -49,8 +49,11 @@ class BIM_PT_misc_utilities(bpy.types.Panel):
         row.operator("bim.draw_system_arrows")
         row = layout.row()
         row.operator("bim.clean_wireframes")
-
+        row = layout.row()
+        row.operator("bim.patch_non_parametric_mep_segment")
         row = layout.row(align=True)
         row.operator("bim.enable_editing_sketch_extrusion_profile", text="Start Sketching")
         row.operator("bim.edit_sketch_extrusion_profile", text="", icon="FILE_REFRESH")
         row.operator("bim.disable_editing_sketch_extrusion_profile", text="", icon="CANCEL")
+        row = layout.row()
+        row.operator("bim.import_plot", text="Import Plot Coordinates", icon="FILE_FOLDER")

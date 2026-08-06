@@ -18,7 +18,10 @@
 
 import os
 import bpy
+import pathlib
 import ifcopenshell
+import ifcopenshell.util.attribute
+import ifcopenshell.util.doc
 import blenderbim.tool as tool
 from blenderbim.bim.ifc import IfcStore
 
@@ -34,30 +37,57 @@ class PsetTemplatesData:
     @classmethod
     def load(cls):
         cls.is_loaded = True
-        cls.data["primary_measure_type"] = cls.primary_measure_type()
         cls.data["pset_template_files"] = cls.pset_template_files()
+
+        # after pset_template_files
         cls.data["pset_templates"] = cls.pset_templates()
+
+        # after pset_template_files because it loads IfcStore.pset_template_file
+        cls.data["primary_measure_type"] = cls.primary_measure_type()
+        cls.data["property_template_type"] = cls.property_template_type()
         cls.data["pset_template"] = cls.pset_template()
         cls.data["prop_templates"] = cls.prop_templates()
 
     @classmethod
     def primary_measure_type(cls):
-        schema = tool.Ifc.schema()
-        return [(t, t, "") for t in sorted([d.name() for d in schema.declarations() if hasattr(d, "declared_type")])]
+        ifc_file = IfcStore.pset_template_file
+        if not ifc_file:
+            return []
+        schema = ifcopenshell.ifcopenshell_wrapper.schema_by_name(ifc_file.schema)
+        version = ifc_file.schema
+        return [
+            (t, t, ifcopenshell.util.doc.get_type_doc(version, t).get("description", ""))
+            for t in sorted([d.name() for d in schema.declarations() if hasattr(d, "declared_type")])
+        ]
+
+    @classmethod
+    def property_template_type(cls):
+        ifc_file = IfcStore.pset_template_file
+        if not ifc_file:
+            return []
+        schema = ifcopenshell.ifcopenshell_wrapper.schema_by_name(ifc_file.schema)
+        attribute = schema.declaration_by_name("IfcSimplePropertyTemplate").attributes()[0]
+        return [(i, i, "") for i in ifcopenshell.util.attribute.get_enum_items(attribute)]
 
     @classmethod
     def pset_template_files(cls):
-        files = os.listdir(os.path.join(bpy.context.scene.BIMProperties.data_dir, "pset"))
-        return [(f.replace(".ifc", ""), f.replace(".ifc", ""), "") for f in files]
+        results = []
+        pset_dir = os.path.join(bpy.context.scene.BIMProperties.data_dir, "pset")
+        files = os.listdir(pset_dir)
+        for f in files:
+            results.append((os.path.join(pset_dir, f), os.path.splitext(os.path.basename(f))[0], "Global Pset Template"))
+
+        pset_dir = tool.Ifc.resolve_uri(bpy.context.scene.BIMProperties.pset_dir)
+        if os.path.isdir(pset_dir):
+            for path in pathlib.Path(pset_dir).glob("*.ifc"):
+                results.append((str(path), os.path.splitext(os.path.basename(str(path)))[0], "Project Pset Template"))
+
+        return sorted(results, key=lambda x: x[1])
 
     @classmethod
     def pset_templates(cls):
         if not IfcStore.pset_template_file:
-            IfcStore.pset_template_path = os.path.join(
-                bpy.context.scene.BIMProperties.data_dir,
-                "pset",
-                bpy.context.scene.BIMPsetTemplateProperties.pset_template_files + ".ifc",
-            )
+            IfcStore.pset_template_path = bpy.context.scene.BIMPsetTemplateProperties.pset_template_files
             IfcStore.pset_template_file = ifcopenshell.open(IfcStore.pset_template_path)
         return [(str(t.id()), t.Name, "") for t in IfcStore.pset_template_file.by_type("IfcPropertySetTemplate")]
 

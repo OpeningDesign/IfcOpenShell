@@ -18,25 +18,60 @@
 
 import ifcopenshell
 import ifcopenshell.api
+import ifcopenshell.util.element
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {
-            "product": None,
-        }
-        for key, value in settings.items():
-            self.settings[key] = value
+def unassign_object(file: ifcopenshell.file, products: list[ifcopenshell.entity_instance]) -> None:
+    """Unassigns products from their aggregate
 
-    def execute(self):
-        for rel in self.settings["product"].Decomposes or []:
-            if not rel.is_a("IfcRelAggregates"):
-                continue
-            if len(rel.RelatedObjects) == 1:
-                return self.file.remove(rel)
-            related_objects = list(rel.RelatedObjects)
-            related_objects.remove(self.settings["product"])
-            rel.RelatedObjects = related_objects
-            ifcopenshell.api.run("owner.update_owner_history", self.file, **{"element": rel})
-            return rel
+    A product (i.e. a smaller part of a whole) may be aggregated into zero
+    or one larger space or element. This function will remove that
+    aggregation relationship.
+
+    As all physical IFC model elements must be part of a hierarchical tree
+    called the "spatial decomposition", using this function will remove the
+    product from that tree. This is a dangerous operation and may result in
+    the product no longer being visible in IFC applications.
+
+    If the product is not part of an aggregation relationship, nothing will
+    happen.
+
+    :param products: The list of parts of the aggregate, typically of IfcElements or
+        IfcSpatialStructureElement subclass
+    :type product: list[ifcopenshell.entity_instance]
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        element = ifcopenshell.api.run("root.create_entity", model, ifc_class="IfcSite")
+        subelement1 = ifcopenshell.api.run("root.create_entity", model, ifc_class="IfcBuilding")
+        subelement2 = ifcopenshell.api.run("root.create_entity", model, ifc_class="IfcBuilding")
+        ifcopenshell.api.run("aggregate.assign_object", model, products=[subelement1], relating_object=element)
+        ifcopenshell.api.run("aggregate.assign_object", model, products=[subelement2], relating_object=element)
+        # nothing is returned
+        ifcopenshell.api.run("aggregate.unassign_object", model, products=[subelement1])
+        # nothing is returned, relationship is removed
+        ifcopenshell.api.run("aggregate.unassign_object", model, products=[subelement2])
+    """
+    settings = {"products": products}
+
+    products = set(settings["products"])
+    rels = set(
+        rel
+        for product in products
+        if (rel := next((rel for rel in product.Decomposes if rel.is_a("IfcRelAggregates")), None))
+    )
+
+    for rel in rels:
+        related_objects = set(rel.RelatedObjects) - products
+        if related_objects:
+            rel.RelatedObjects = list(related_objects)
+            ifcopenshell.api.run("owner.update_owner_history", file, **{"element": rel})
+        else:
+            history = rel.OwnerHistory
+            file.remove(rel)
+            if history:
+                ifcopenshell.util.element.remove_deep2(file, history)

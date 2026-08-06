@@ -15,15 +15,33 @@
 #
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
+import ifcopenshell
+from typing import Any
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"organisation": None, "attributes": {}}
-        for key, value in settings.items():
-            self.settings[key] = value
+def edit_organisation(file: ifcopenshell.file, organisation: ifcopenshell.entity_instance, attributes: dict[str, Any]) -> None:
+    """Edits the attributes of an IfcOrganization
 
-    def execute(self):
-        for name, value in self.settings["attributes"].items():
-            setattr(self.settings["organisation"], name, value)
+    For more information about the attributes and data types of an
+    IfcOrganization, consult the IFC documentation.
+
+    :param organisation: The IfcOrganization entity you want to edit
+    :type organisation: ifcopenshell.entity_instance
+    :param attributes: a dictionary of attribute names and values.
+    :type attributes: dict
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        organisation = ifcopenshell.api.run("owner.add_organisation", model,
+            identification="AWB", name="Architects With Ballpens")
+        ifcopenshell.api.run("owner.edit_organisation", model, organisation=organisation,
+            attributes={"name": "Architects Without Ballpens"})
+    """
+    settings = {"organisation": organisation, "attributes": attributes}
+
+    for name, value in settings["attributes"].items():
+        setattr(settings["organisation"], name, value)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # IfcClash - IFC-based clash detection.
-# Copyright (C) 2020, 2021 Dion Moult <dion@thinkmoult.com>
+# Copyright (C) 2020-2024 Dion Moult <dion@thinkmoult.com>
 #
 # This file is part of IfcClash.
 #
@@ -19,16 +19,13 @@
 # along with IfcClash.  If not, see <http://www.gnu.org/licenses/>.
 
 
-import numpy as np
 import json
-import sys
-import argparse
-import logging
+import time
+import numpy as np
 import multiprocessing
 import ifcopenshell
 import ifcopenshell.geom
 import ifcopenshell.util.selector
-from . import collider
 
 
 class Clasher:
@@ -36,55 +33,78 @@ class Clasher:
         self.settings = settings
         self.geom_settings = ifcopenshell.geom.settings()
         self.clash_sets = []
-        self.collider = collider.Collider(self.settings.logger)
-        self.selector = ifcopenshell.util.selector.Selector()
+        self.logger = self.settings.logger
+        self.groups = {}
         self.ifcs = {}
+        self.tree = None
 
     def clash(self):
-        existing_limit = sys.getrecursionlimit()
         for clash_set in self.clash_sets:
             self.process_clash_set(clash_set)
 
     def process_clash_set(self, clash_set):
-        self.collider.create_group("a")
+        self.tree = ifcopenshell.geom.tree()
+        self.create_group("a")
         for source in clash_set["a"]:
             source["ifc"] = self.load_ifc(source["file"])
             self.add_collision_objects("a", source["ifc"], source.get("mode", None), source.get("selector", None))
 
-        if "b" in clash_set:
-            self.collider.create_group("b")
+        if "b" in clash_set and clash_set["b"]:
+            self.create_group("b")
             for source in clash_set["b"]:
                 source["ifc"] = self.load_ifc(source["file"])
                 self.add_collision_objects("b", source["ifc"], source.get("mode", None), source.get("selector", None))
-            results = self.collider.collide_group("a", "b")
+            b = "b"
         else:
-            results = self.collider.collide_internal("a")
+            b = "a"
+
+        mode = clash_set["mode"]
+        if mode == "intersection":
+            results = self.tree.clash_intersection_many(
+                list(self.groups["a"]["elements"].values()),
+                list(self.groups[b]["elements"].values()),
+                tolerance=clash_set["tolerance"],
+                check_all=clash_set["check_all"],
+            )
+        elif mode == "collision":
+            results = self.tree.clash_collision_many(
+                list(self.groups["a"]["elements"].values()),
+                list(self.groups[b]["elements"].values()),
+                allow_touching=clash_set["allow_touching"],
+            )
+        elif mode == "clearance":
+            results = self.tree.clash_clearance_many(
+                list(self.groups["a"]["elements"].values()),
+                list(self.groups[b]["elements"].values()),
+                clearance=clash_set["clearance"],
+                check_all=clash_set["check_all"],
+            )
 
         processed_results = {}
         for result in results:
-            element1 = self.get_element(clash_set["a"], result["id1"])
-            if "b" in clash_set:
-                element2 = self.get_element(clash_set["b"], result["id2"])
-            else:
-                element2 = self.get_element(clash_set["a"], result["id2"])
+            element1 = result.a
+            element2 = result.b
 
-            contact = result["collision"].getContacts()[0]
-            processed_results[f"{result['id1']}-{result['id2']}"] = {
-                "a_global_id": result["id1"],
-                "b_global_id": result["id2"],
+            processed_results[f"{element1.get_argument(0)}-{element2.get_argument(0)}"] = {
+                "a_global_id": element1.get_argument(0),
+                "b_global_id": element2.get_argument(0),
                 "a_ifc_class": element1.is_a(),
                 "b_ifc_class": element2.is_a(),
-                "a_name": element1.Name,
-                "b_name": element2.Name,
-                "normal": list(contact.normal),
-                "position": list(contact.pos),
-                "penetration_depth": contact.penetration_depth,
+                "a_name": element1.get_argument(2),
+                "b_name": element2.get_argument(2),
+                "type": ["protrusion", "pierce", "collision", "clearance"][result.clash_type],
+                "p1": list(result.p1),
+                "p2": list(result.p2),
+                "distance": result.distance,
             }
         clash_set["clashes"] = processed_results
+        self.logger.info(f"Found clashes: {len(processed_results.keys())}")
+
+    def create_group(self, name):
+        self.logger.info(f"Creating group {name}")
+        self.groups[name] = {"elements": {}, "objects": {}}
 
     def load_ifc(self, path):
-        import time
-
         start = time.time()
         self.settings.logger.info(f"Loading IFC {path}")
         ifc = self.ifcs.get(path, None)
@@ -95,21 +115,35 @@ class Clasher:
         return ifc
 
     def add_collision_objects(self, name, ifc_file, mode=None, selector=None):
-        import time
-
         start = time.time()
         self.settings.logger.info("Creating iterator")
-        if not mode:
-            elements = ifc_file.by_type("IfcElement")
+        if not mode or mode == "a" or not selector:
+            elements = set(ifc_file.by_type("IfcElement"))
+            elements -= set(ifc_file.by_type("IfcFeatureElement"))
         elif mode == "e":
-            elements = set(ifc_file.by_type("IfcElement")) - set(self.selector.parse(ifc_file, selector))
+            elements = set(ifc_file.by_type("IfcElement"))
+            elements -= set(ifc_file.by_type("IfcFeatureElement"))
+            elements -= set(ifcopenshell.util.selector.filter_elements(ifc_file, selector))
         elif mode == "i":
-            elements = self.selector.parse(ifc_file, selector)
+            elements = set(ifcopenshell.util.selector.filter_elements(ifc_file, selector))
         iterator = ifcopenshell.geom.iterator(
             self.geom_settings, ifc_file, multiprocessing.cpu_count(), include=elements
         )
         self.settings.logger.info(f"Iterator creation finished {time.time() - start}")
-        self.collider.create_objects(name, ifc_file, iterator, elements)
+
+        start = time.time()
+        self.logger.info(f"Adding objects {name}")
+        assert iterator.initialize()
+        while True:
+            self.tree.add_element(iterator.get())
+            shape = iterator.get()
+            if not iterator.next():
+                break
+        self.logger.info(f"Tree finished {time.time() - start}")
+        start = time.time()
+        self.groups[name]["elements"].update({e.GlobalId: e for e in elements})
+        self.logger.info(f"Element metadata finished {time.time() - start}")
+        start = time.time()
 
     def export(self):
         if len(self.settings.output) > 4 and self.settings.output[-4:] == ".bcf":
@@ -117,70 +151,29 @@ class Clasher:
         self.export_json()
 
     def export_bcfxml(self):
-        import bcf
-        import bcf.v2.bcfxml
+        from bcf.v2.bcfxml import BcfXml
 
         for i, clash_set in enumerate(self.clash_sets):
-            bcfxml = bcf.v2.bcfxml.BcfXml()
-            bcfxml.new_project()
-            bcfxml.project.name = clash_set["name"]
-            bcfxml.edit_project()
-            for key, clash in clash_set["clashes"].items():
-                topic = bcf.v2.data.Topic()
-                topic.title = "{}/{} and {}/{}".format(
-                    clash["a_ifc_class"], clash["a_name"], clash["b_ifc_class"], clash["b_name"]
+            bcfxml = BcfXml.create_new(clash_set["name"])
+            for clash in clash_set["clashes"].values():
+                title = f'{clash["a_ifc_class"]}/{clash["a_name"]} and {clash["b_ifc_class"]}/{clash["b_name"]}'
+                topic = bcfxml.add_topic(title, title, "IfcClash")
+                viewpoint = topic.add_viewpoint_from_point_and_guids(
+                    np.array(clash["position"]),
+                    clash["a_global_id"],
+                    clash["b_global_id"],
                 )
-                topic = bcfxml.add_topic(topic)
-                viewpoint = bcf.v2.data.Viewpoint()
-                viewpoint.perspective_camera = bcf.v2.data.PerspectiveCamera()
-                position = np.array(clash["position"])
-                point = position + np.array((5, 5, 5))  # Dumb, but works (for now)!
-                viewpoint.perspective_camera.camera_view_point.x = point[0]
-                viewpoint.perspective_camera.camera_view_point.y = point[1]
-                viewpoint.perspective_camera.camera_view_point.z = point[2]
-                mat = self.get_track_to_matrix(point, position)
-                viewpoint.perspective_camera.camera_direction.x = mat[0][2] * -1
-                viewpoint.perspective_camera.camera_direction.y = mat[1][2] * -1
-                viewpoint.perspective_camera.camera_direction.z = mat[2][2] * -1
-                viewpoint.perspective_camera.camera_up_vector.x = mat[0][1]
-                viewpoint.perspective_camera.camera_up_vector.y = mat[1][1]
-                viewpoint.perspective_camera.camera_up_vector.z = mat[2][1]
-                viewpoint.components = bcf.v2.data.Components()
-                c1 = bcf.v2.data.Component()
-                c1.ifc_guid = clash["a_global_id"]
-                c2 = bcf.v2.data.Component()
-                c2.ifc_guid = clash["b_global_id"]
-                viewpoint.components.selection.append(c1)
-                viewpoint.components.selection.append(c2)
-                viewpoint.components.visibility = bcf.v2.data.ComponentVisibility()
-                viewpoint.components.visibility.default_visibility = True
-                viewpoint.snapshot = self.get_viewpoint_snapshot(viewpoint, mat)
-                bcfxml.add_viewpoint(topic, viewpoint)
-            if i == 0:
-                bcfxml.save_project(self.settings.output)
-            else:
-                bcfxml.save_project(self.settings.output + f".{i}")
+                snapshot = self.get_viewpoint_snapshot(viewpoint)
+                if snapshot:
+                    topic.markup.viewpoints[0].snapshot = snapshot[0]
+                    viewpoint.snapshot = snapshot[1]
+            suffix = f".{i}" if i else ""
+            bcfxml.save_project(f"{self.settings.output}{suffix}")
 
-    def get_viewpoint_snapshot(self, viewpoint, mat):
-        return None  # Possible to overload this function in a GUI application if used as a library
-
-    # https://blender.stackexchange.com/questions/68834/recreate-to-track-quat-with-two-vectors-using-python/141706#141706
-    def get_track_to_matrix(self, camera_position, target_position):
-        camera_direction = camera_position - target_position
-        camera_direction = camera_direction / np.linalg.norm(camera_direction)
-        camera_right = np.cross(np.array([0.0, 0.0, 1.0]), camera_direction)
-        camera_right = camera_right / np.linalg.norm(camera_right)
-        camera_up = np.cross(camera_direction, camera_right)
-        camera_up = camera_up / np.linalg.norm(camera_up)
-        rotation_transform = np.zeros((4, 4))
-        rotation_transform[0, :3] = camera_right
-        rotation_transform[1, :3] = camera_up
-        rotation_transform[2, :3] = camera_direction
-        rotation_transform[-1, -1] = 1
-        translation_transform = np.eye(4)
-        translation_transform[:3, -1] = -camera_position
-        look_at_transform = np.matmul(rotation_transform, translation_transform)
-        return np.linalg.inv(look_at_transform)
+    def get_viewpoint_snapshot(self, viewpoint):
+        # Possible to overload this function in a GUI application if used as a library.
+        # Should return a tuple of (filename, bytes).
+        return None
 
     def export_json(self):
         clash_sets = self.clash_sets.copy()
@@ -191,15 +184,6 @@ class Clasher:
                 del source["ifc"]
         with open(self.settings.output, "w", encoding="utf-8") as clashes_file:
             json.dump(clash_sets, clashes_file, indent=4)
-
-    def get_element(self, clash_set, global_id):
-        for source in clash_set:
-            try:
-                element = source["ifc"].by_guid(global_id)
-                if element:
-                    return element
-            except:
-                pass
 
     def smart_group_clashes(self, clash_sets, max_clustering_distance):
         from sklearn.cluster import OPTICS

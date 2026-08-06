@@ -34,10 +34,9 @@ class AggregateData:
         cls.data = {
             "has_relating_object": cls.has_relating_object(),
             "relating_object_label": cls.get_relating_object_label(),
-            "relating_object_id": cls.get_relating_object_id(),
             "has_related_objects": cls.has_related_objects(),
-            "related_objects_amount": cls.get_related_objects_amount(),
-            "ifc_class": cls.ifc_class(),
+            "total_parts": cls.total_parts(),
+            "total_linked_aggregate": cls.total_linked_aggregate(),
         }
         cls.is_loaded = True
 
@@ -56,17 +55,11 @@ class AggregateData:
             return f"{aggregate.is_a()}/{aggregate.Name or ''}"
 
     @classmethod
-    def get_relating_object_id(cls) -> int:
-        aggregate = cls.get_relating_object()
-        if aggregate:
-            return aggregate.id()
-
-    @classmethod
     def get_related_objects(cls):
         return ifcopenshell.util.element.get_parts(tool.Ifc.get_entity(bpy.context.active_object))
 
     @classmethod
-    def get_related_objects_amount(cls):
+    def total_parts(cls):
         parts = cls.get_related_objects()
         return len(parts) if parts else 0
 
@@ -75,7 +68,24 @@ class AggregateData:
         return bool(cls.get_related_objects())
 
     @classmethod
-    def ifc_class(cls) -> str:
+    def total_linked_aggregate(cls):
         element = tool.Ifc.get_entity(bpy.context.active_object)
-        if element:
-            return element.is_a()
+        aggregate = ifcopenshell.util.element.get_aggregate(element)
+        if not aggregate:
+            return []
+        if not element:
+            return []
+        
+        product_linked_agg_group = [
+            r
+            for r in getattr(aggregate, "HasAssignments", []) or []
+            if r.is_a("IfcRelAssignsToGroup")
+            if "BBIM_Linked_Aggregate" in r.RelatingGroup.Name
+        ]
+
+        if not product_linked_agg_group:
+            return []
+        
+        total = len(product_linked_agg_group[0].RelatedObjects)
+        return total
+        

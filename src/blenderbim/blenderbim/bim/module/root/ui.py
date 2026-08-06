@@ -25,12 +25,13 @@ from blenderbim.bim.module.root.data import IfcClassData
 
 
 class BIM_PT_class(Panel):
-    bl_label = "IFC Class"
+    bl_label = "Class"
     bl_idname = "BIM_PT_class"
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "object"
-    bl_parent_id = "BIM_PT_object_metadata"
+    bl_parent_id = "BIM_PT_tab_object_metadata"
+    bl_options = {"HIDE_HEADER"}
 
     @classmethod
     def poll(cls, context):
@@ -57,14 +58,16 @@ class BIM_PT_class(Panel):
                     root_prop.get_ifc_predefined_types(context.scene.BIMRootProperties, context),
                     is_reassigning_class=True,
                 )
+                self.layout.prop(context.scene.BIMRootProperties, "relating_class_object", icon="COPYDOWN")
             else:
                 row = self.layout.row(align=True)
-                row.label(text=IfcClassData.data["name"])
-                op = row.operator("bim.select_ifc_class", text="", icon="RESTRICT_SELECT_OFF")
-                op.ifc_class = IfcClassData.data["ifc_class"]
-                row.operator("bim.copy_class", icon="DUPLICATE", text="")
+                row.label(
+                    text=IfcClassData.data["name"],
+                    icon="CON_CHILDOF" if IfcClassData.data["has_inherited_predefined_type"] else "NONE",
+                )
+                row.operator("bim.select_ifc_class", text="", icon="RESTRICT_SELECT_OFF")
                 row.operator("bim.unlink_object", icon="UNLINKED", text="")
-                if IfcStore.get_file().by_id(props.ifc_definition_id).is_a("IfcRoot"):
+                if IfcClassData.data["can_reassign_class"]:
                     row.operator("bim.enable_reassign_class", icon="GREASEPENCIL", text="")
         else:
             ifc_predefined_types = root_prop.get_ifc_predefined_types(context.scene.BIMRootProperties, context)

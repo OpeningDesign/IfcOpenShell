@@ -15,15 +15,32 @@
 #
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
+import ifcopenshell
+from typing import Any
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"element": None, "attributes": {}}
-        for key, value in settings.items():
-            self.settings[key] = value
+def edit_assigned_material(file: ifcopenshell.file, element: ifcopenshell.entity_instance, attributes: dict[str, Any]) -> None:
+    """Edits the attributes of an IfcMaterial
 
-    def execute(self):
-        for name, value in self.settings["attributes"].items():
-            setattr(self.settings["element"], name, value)
+    For more information about the attributes and data types of an
+    IfcMaterial, consult the IFC documentation.
+
+    :param element: The IfcMaterial entity you want to edit
+    :type element: ifcopenshell.entity_instance
+    :param attributes: a dictionary of attribute names and values.
+    :type attributes: dict
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        concrete = ifcopenshell.api.run("material.add_material", model, name="CON01", category="concrete")
+        ifcopenshell.api.run("material.edit_assigned_material", model,
+            element=concrete, attributes={"Description": "40MPA concrete with broom finish"})
+    """
+    settings = {"element": element, "attributes": attributes}
+
+    for name, value in settings["attributes"].items():
+        setattr(settings["element"], name, value)

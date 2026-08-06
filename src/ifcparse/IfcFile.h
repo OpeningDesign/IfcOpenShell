@@ -74,6 +74,7 @@ class IFC_PARSE_API IfcFile {
 public:
 	typedef std::map<const IfcParse::declaration*, aggregate_of_instance::ptr> entities_by_type_t;
 	typedef boost::unordered_map<unsigned int, IfcUtil::IfcBaseClass*> entity_by_id_t;
+	typedef boost::unordered_map<uint32_t, IfcUtil::IfcBaseClass*> entity_by_iden_t;
 	typedef std::map<std::string, IfcUtil::IfcBaseClass*> entity_by_guid_t;
 	typedef std::tuple<int, int, int> inverse_attr_record;
 	enum INVERSE_ATTR { INSTANCE_ID, INSTANCE_TYPE, ATTRIBUTE_INDEX };
@@ -133,6 +134,8 @@ private:
 	std::vector<Argument*> internal_attribute_vector_, internal_attribute_vector_simple_type_;
 
 	entity_by_id_t byid;
+	// this is for simple types
+	entity_by_iden_t byidentity;
 	entities_by_type_t bytype;
 	entities_by_type_t bytype_excl;
 	entities_by_ref_t byref;
@@ -260,23 +263,16 @@ public:
 	
 	int getTotalInverses(int instance_id);
 
-	template <class T>
+	template <typename T>
 	typename T::list::ptr getInverse(int instance_id, int attribute_index) {
-		aggregate_of_instance::ptr return_value(new aggregate_of_instance);
-		auto it = byref.find({ instance_id, T::Class().index_in_schema(), attribute_index });
-		if (it != byref.end()) {
-			for (auto& i : it->second) {
-				return_value->push((T*)instance_by_id(i));
-			}
-		}
-		return return_value;
+		return getInverse(instance_id, &T::Class(), attribute_index)->template as<T>();
 	}
 
 	unsigned int FreshId() { return ++MaxId; }
 
 	unsigned int getMaxId() const { return MaxId; }
 
-	const IfcParse::declaration* const ifcroot_type() const { return ifcroot_type_; }
+	const IfcParse::declaration* ifcroot_type() const { return ifcroot_type_; }
 
 	void recalculate_id_counter();
 

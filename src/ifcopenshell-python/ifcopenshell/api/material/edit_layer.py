@@ -15,16 +15,57 @@
 #
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
+import ifcopenshell
+from typing import Optional, Any
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"layer": None, "attributes": {}, "material": None}
-        for key, value in settings.items():
-            self.settings[key] = value
+def edit_layer(
+    file: ifcopenshell.file,
+    layer: ifcopenshell.entity_instance,
+    attributes: Optional[dict[str, Any]] = None,
+    material: Optional[ifcopenshell.entity_instance] = None,
+) -> None:
+    """Edits the attributes of an IfcMaterialLayer
 
-    def execute(self):
-        for name, value in self.settings["attributes"].items():
-            setattr(self.settings["layer"], name, value)
-        self.settings["layer"].Material = self.settings["material"]
+    For more information about the attributes and data types of an
+    IfcMaterialLayer, consult the IFC documentation.
+
+    :param layer: The IfcMaterialLayer entity you want to edit
+    :type layer: ifcopenshell.entity_instance
+    :param attributes: a dictionary of attribute names and values.
+    :type attributes: dict, optional
+    :param material: The IfcMaterial entity you want the layer to be made
+        from.
+    :type material: ifcopenshell.entity_instance, optional
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        # Let's create two materials typically used for steel stud partition
+        # walls with gypsum lining.
+        gypsum = ifcopenshell.api.run("material.add_material", model, name="PB01", category="gypsum")
+        steel = ifcopenshell.api.run("material.add_material", model, name="ST01", category="steel")
+
+        # Create a material layer set to contain our layers.
+        material_set = ifcopenshell.api.run("material.add_material_set", model,
+            name="GYP-ST-GYP", set_type="IfcMaterialLayerSet")
+
+        # Now let's use those materials as three layers in our set, such
+        # that the steel studs are sandwiched by the gypsum. Let's imagine
+        # we're setting the layer thickness in millimeters.
+        layer = ifcopenshell.api.run("material.add_layer", model, layer_set=material_set, material=gypsum)
+        ifcopenshell.api.run("material.edit_layer", model, layer=layer, attributes={"LayerThickness": 13})
+        layer = ifcopenshell.api.run("material.add_layer", model, layer_set=material_set, material=steel)
+        ifcopenshell.api.run("material.edit_layer", model, layer=layer, attributes={"LayerThickness": 92})
+        layer = ifcopenshell.api.run("material.add_layer", model, layer_set=material_set, material=gypsum)
+        ifcopenshell.api.run("material.edit_layer", model, layer=layer, attributes={"LayerThickness": 13})
+    """
+    settings = {"layer": layer, "attributes": attributes or {}, "material": material}
+
+    for name, value in settings["attributes"].items():
+        setattr(settings["layer"], name, value)
+    if settings["material"]:
+        settings["layer"].Material = settings["material"]

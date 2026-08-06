@@ -28,7 +28,7 @@ Source installation
 
 1. :doc:`Install IfcOpenShell <ifcopenshell-python/installation>`
 2. `Clone the source code <https://github.com/IfcOpenShell/IfcOpenShell/tree/v0.7.0/src/ifcdiff>`_.
-3. ``cd /path/to/src/ifcdiff``
+3. ``cd /path/to/IfcOpenShell/src/ifcdiff``
 4. ``pip install -r requirements.txt``
 
 Here is a minimal example of how to use IfcDiff as a Python module or CLI
@@ -88,7 +88,7 @@ interface to access the IfcOpenShell utilities.
 
 1. Install the BlenderBIM Add-on by following the `BlenderBIM Add-on
    installation documentation
-   <https://blenderbim.org/docs/users/installation.html>`_.
+   <https://docs.blenderbim.org/users/installation.html>`_.
 
 2. Launch Blender. Change to the **Scene Properties** tab in the **Properties
    Panel**. Scroll down to the **IFC Quality Control > IFC Diff** panel.

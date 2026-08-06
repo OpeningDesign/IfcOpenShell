@@ -18,18 +18,66 @@
 
 import os
 import bpy
+import bmesh
 import json
+import time
+import logging
+import textwrap
+import shutil
+import platform
+import subprocess
+import tempfile
 import webbrowser
 import ifcopenshell
 import blenderbim.bim.handler
 import blenderbim.tool as tool
 from . import schema
+from blenderbim.bim import import_ifc
 from blenderbim.bim.ifc import IfcStore
 from blenderbim.bim.prop import StrProperty
 from blenderbim.bim.ui import IFCFileSelector
 from blenderbim.bim.helper import get_enum_items
 from mathutils import Vector, Matrix, Euler
 from math import radians
+from pathlib import Path
+from collections import namedtuple
+from typing import List
+
+
+class SetTab(bpy.types.Operator):
+    bl_idname = "bim.set_tab"
+    # NOTE: bl_label is set to empty string intentionally
+    # to avoid showing the operator's name in the tooltips, see #3704
+    bl_label = ""
+    bl_options = {"REGISTER", "UNDO", "INTERNAL"}
+    tab: bpy.props.StringProperty()
+
+    @classmethod
+    def description(cls, context, operator):
+        return next((t[1] for t in blenderbim.bim.prop.get_tab(None, context) if t[0] == operator.tab), "")
+
+    def execute(self, context):
+        if context.area.spaces.active.search_filter:
+            return {"FINISHED"}
+        tool.Blender.setup_tabs()
+        aprops = tool.Blender.get_area_props(context)
+        aprops.tab = self.tab
+        return {"FINISHED"}
+
+
+class SwitchTab(bpy.types.Operator):
+    bl_idname = "bim.switch_tab"
+    bl_label = "Switch Tab"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Switches to the last used tab"
+
+    def execute(self, context):
+        if context.area.spaces.active.search_filter:
+            return {"FINISHED"}
+        tool.Blender.setup_tabs()
+        aprops = tool.Blender.get_area_props(context)
+        aprops.tab = aprops.alt_tab
+        return {"FINISHED"}
 
 
 class OpenUri(bpy.types.Operator):
@@ -39,6 +87,15 @@ class OpenUri(bpy.types.Operator):
 
     def execute(self, context):
         webbrowser.open(self.uri)
+        return {"FINISHED"}
+
+
+class CloseError(bpy.types.Operator):
+    bl_idname = "bim.close_error"
+    bl_label = "Close Error"
+
+    def execute(self, context):
+        blenderbim.last_error = None
         return {"FINISHED"}
 
 
@@ -83,16 +140,22 @@ class SelectIfcFile(bpy.types.Operator, IFCFileSelector):
     bl_idname = "bim.select_ifc_file"
     bl_label = "Select IFC File"
     bl_options = {"REGISTER", "UNDO"}
-    bl_description = "Select a different IFC file"
+    bl_description = f"Select a different IFC file.\n{tool.Blender.operator_invoke_filepath_hotkeys_description}"
     filepath: bpy.props.StringProperty(subtype="FILE_PATH")
     filter_glob: bpy.props.StringProperty(default="*.ifc;*.ifczip;*.ifcxml", options={"HIDDEN"})
+    use_relative_path: bpy.props.BoolProperty(name="Use Relative Path", default=False)
 
     def execute(self, context):
         if self.is_existing_ifc_file():
-            context.scene.BIMProperties.ifc_file = self.filepath
+            context.scene.BIMProperties.ifc_file = self.get_filepath()
         return {"FINISHED"}
 
     def invoke(self, context, event):
+        filepath = Path(context.scene.BIMProperties.ifc_file)
+        res = tool.Blender.operator_invoke_filepath_hotkeys(self, context, event, filepath)
+        if res is not None:
+            return res
+
         context.window_manager.fileselect_add(self)
         return {"RUNNING_MODAL"}
 
@@ -129,6 +192,171 @@ class SelectSchemaDir(bpy.types.Operator):
         return {"RUNNING_MODAL"}
 
 
+class FileAssociate(bpy.types.Operator):
+    bl_idname = "bim.file_associate"
+    bl_label = "Associate BlenderBIM with *.ifc files"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Creates a Desktop launcher and associates it with IFC files"
+
+    @classmethod
+    def poll(cls, context):
+        if platform.system() in ("Linux", "Windows"):
+            return True
+        cls.poll_message_set("Option available only on Windows & Linux.")
+        # TODO Darwin
+        # https://stackoverflow.com/questions/1082889/how-to-change-filetype-association-in-the-registry
+        return False
+
+    def draw(self, context):
+        # NOTE: really weird thing on windows that typing this command in cmd works
+        # when even if you create .bat with the command below and run it as administrator it won't
+        # Haven't found a workaround yet to automate process completely.
+        command = "ASSOC .IFC=BLENDERBIM"
+        self.layout.label(text="On the next step to create file association ")
+        self.layout.label(text="the system console will be opened ")
+        self.layout.label(text=f"and you will be asked to type command")
+        self.layout.label(text=f"{command}")
+        self.layout.label(text="to create an association.")
+
+    def invoke(self, context, event):
+        if platform.system() == "Windows":
+            return context.window_manager.invoke_props_dialog(self)
+        else:
+            return self.execute(context)
+
+    def execute(self, context):
+        src_dir = os.path.join(os.path.dirname(__file__), "../libs/desktop")
+        binary_path = bpy.app.binary_path
+        if platform.system() == "Linux":
+            destdir = os.path.join(os.environ["HOME"], ".local")
+            self.install_desktop_linux(src_dir=src_dir, destdir=destdir, binary_path=binary_path)
+        elif platform.system() == "Windows":
+            self.install_desktop_windows(src_dir, binary_path)
+        self.report({"INFO"}, "Associations established.")
+        return {"FINISHED"}
+
+    def install_desktop_windows(self, src_dir, binary_path):
+        # very important to clear this regitstry key before creating new association
+        # tried to do the regitsry change from powershell/cmd - but even admin rights are not enough
+        # this is why we're using .reg
+        reg_change_path = os.path.join(src_dir, "windows_bbim_association.reg")
+        subprocess.run(["cmd", "/c", "call", reg_change_path])
+
+        ps_script_path = os.path.join(src_dir, "windows_bbim_association.ps1")
+        # NOTE: call powershell with RunAs to get admin rights from user
+        subprocess.run(["powershell", "-ExecutionPolicy", "Bypass", "-File", ps_script_path, binary_path], shell=True)
+
+    def install_desktop_linux(self, src_dir=None, destdir="/tmp", binary_path="/usr/bin/blender"):
+        """Creates linux file assocations and launcher icon"""
+
+        for rel_path in (
+            "bin",
+            "share/icons/hicolor/128x128/apps",
+            "share/icons/hicolor/128x128/mimetypes",
+            "share/applications",
+            "share/mime/packages",
+        ):
+            os.makedirs(os.path.join(destdir, rel_path), exist_ok=True)
+
+        shutil.copy(
+            os.path.join(src_dir, "blenderbim.png"),
+            os.path.join(destdir, "share/icons/hicolor/128x128/apps"),
+        )
+        shutil.copy(
+            os.path.join(src_dir, "blenderbim.desktop"),
+            os.path.join(destdir, "share/applications"),
+        )
+        shutil.copy(
+            os.path.join(src_dir, "blenderbim.xml"),
+            os.path.join(destdir, "share/mime/packages"),
+        )
+        shutil.copyfile(
+            os.path.join(src_dir, "x-ifc_128x128.png"),
+            os.path.join(destdir, "share/icons/hicolor/128x128/mimetypes", "x-ifc.png"),
+        )
+
+        # copy and rewrite wrapper script
+        with open(os.path.join(src_dir, "blenderbim"), "r") as wrapper_template:
+            filedata = wrapper_template.read()
+            filedata = filedata.replace("#BLENDER_EXE=/opt/blender-3.3/blender", 'BLENDER_EXE="' + binary_path + '"')
+        with open(os.path.join(destdir, "bin", "blenderbim"), "w") as wrapper:
+            wrapper.write(filedata)
+
+        os.chmod(os.path.join(destdir, "bin", "blenderbim"), 0o755)
+
+        self.refresh_system_linux(destdir=destdir)
+
+    def refresh_system_linux(self, destdir="/tmp"):
+        """Attempt to update mime and desktop databases"""
+        try:
+            subprocess.call(["update-mime-database", os.path.join(destdir, "share/mime")])
+        except:
+            pass
+        try:
+            subprocess.call(["update-desktop-database", os.path.join(destdir, "share/applications")])
+        except:
+            pass
+
+
+class FileUnassociate(bpy.types.Operator):
+    bl_idname = "bim.file_unassociate"
+    bl_label = "Remove BlenderBIM *.ifc association"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Removes Desktop launcher and unassociates it with IFC files"
+
+    @classmethod
+    def poll(cls, context):
+        if platform.system() in ("Linux", "Windows"):
+            return True
+        cls.poll_message_set("Option available only on Windows & Linux.")
+        return False
+
+    def execute(self, context):
+        if platform.system() == "Linux":
+            destdir = os.path.join(os.environ["HOME"], ".local")
+            self.uninstall_desktop_linux(destdir=destdir)
+        elif platform.system() == "Windows":
+            self.uninstall_desktop_windows()
+        return {"FINISHED"}
+
+    def uninstall_desktop_windows(self):
+        # NOTE: call powershell with RunAs to get admin rights from user
+        cmd = [
+            "powershell",
+            "-Command",
+            "Start-Process -Verb RunAs -Wait cmd -ArgumentList '/c reg delete HKCR\\BLENDERBIM /f'",
+        ]
+        subprocess.run(cmd, check=True)
+        self.report({"INFO"}, "Association removed.")
+
+    def uninstall_desktop_linux(self, destdir="/tmp"):
+        """Removes linux file assocations and launcher icon"""
+        for rel_path in (
+            "share/icons/hicolor/128x128/apps/blenderbim.png",
+            "share/icons/hicolor/128x128/mimetypes/x-ifc.png",
+            "share/applications/blenderbim.desktop",
+            "share/mime/packages/blenderbim.xml",
+            "bin/blenderbim",
+        ):
+            try:
+                os.remove(os.path.join(destdir, rel_path))
+            except:
+                pass
+
+        self.refresh_system_linux(destdir=destdir)
+
+    def refresh_system_linux(self, destdir="/tmp"):
+        """Attempt to update mime and desktop databases"""
+        try:
+            subprocess.call(["update-mime-database", os.path.join(destdir, "share/mime")])
+        except:
+            pass
+        try:
+            subprocess.call(["update-desktop-database", os.path.join(destdir, "share/applications")])
+        except:
+            pass
+
+
 class OpenUpstream(bpy.types.Operator):
     bl_idname = "bim.open_upstream"
     bl_label = "Open Upstream Reference"
@@ -138,11 +366,13 @@ class OpenUpstream(bpy.types.Operator):
         if self.page == "home":
             webbrowser.open("https://blenderbim.org/")
         elif self.page == "docs":
-            webbrowser.open("https://blenderbim.org/docs/")
+            webbrowser.open("https://docs.blenderbim.org/")
         elif self.page == "wiki":
             webbrowser.open("https://wiki.osarch.org/index.php?title=Category:BlenderBIM_Add-on")
         elif self.page == "community":
             webbrowser.open("https://community.osarch.org/")
+        elif self.page == "fund":
+            webbrowser.open("https://opencollective.com/opensourcebim")
         return {"FINISHED"}
 
 
@@ -192,6 +422,21 @@ class BIM_OT_add_section_plane(bpy.types.Operator):
 
     def create_section_compare_node(self):
         group = bpy.data.node_groups.new("Section Compare", type="ShaderNodeTree")
+        if bpy.app.version >= (4, 0, 0):
+            input_value = group.interface.new_socket(name="Value", in_out="INPUT", socket_type="NodeSocketFloat")
+            input_value.default_value = 1.0  # Mandatory multiplier for the last node group
+            group.interface.new_socket(name="Vector", in_out="INPUT", socket_type="NodeSocketVector")
+            group.interface.new_socket(name="Line Decorator", in_out="INPUT", socket_type="NodeSocketFloat")
+            group.interface.new_socket(name="Value", in_out="OUTPUT", socket_type="NodeSocketFloat")
+            group.interface.new_socket(name="Line Decorator", in_out="OUTPUT", socket_type="NodeSocketFloat")
+        else:
+            group.inputs.new("NodeSocketFloat", "Value")
+            group.inputs["Value"].default_value = 1.0  # Mandatory multiplier for the last node group
+            group.inputs.new("NodeSocketVector", "Vector")
+            group.inputs.new("NodeSocketFloat", "Line Decorator")
+            group.outputs.new("NodeSocketFloat", "Value")
+            group.outputs.new("NodeSocketFloat", "Line Decorator")
+
         group_input = group.nodes.new(type="NodeGroupInput")
         group_input.location = 0, 50
 
@@ -203,65 +448,99 @@ class BIM_OT_add_section_plane(bpy.types.Operator):
         greater.inputs[1].default_value = 0
         greater.location = 400, 0
 
+        compare = group.nodes.new(type="ShaderNodeMath")
+        compare.operation = "COMPARE"
+        compare.inputs[1].default_value = 0
+        compare.inputs[2].default_value = 0.04
+        compare.location = 400, -200
+
         multiply = group.nodes.new(type="ShaderNodeMath")
         multiply.operation = "MULTIPLY"
         multiply.inputs[0].default_value = 1
         multiply.location = 600, 150
 
-        group_output = group.nodes.new(type="NodeGroupOutput")
-        group_output.location = 800, 0
+        add_line_decorator = group.nodes.new(type="ShaderNodeMath")
+        add_line_decorator.operation = "ADD"
+        add_line_decorator.location = 600, -200
 
-        group.links.new(group_input.outputs[""], multiply.inputs[0])
-        group.links.new(group_input.outputs[""], separate_xyz.inputs[0])
+        multiply_line_decorator = group.nodes.new(type="ShaderNodeMath")
+        multiply_line_decorator.operation = "MULTIPLY"
+        multiply_line_decorator.location = 800, -200
+
+        group_output = group.nodes.new(type="NodeGroupOutput")
+        group_output.location = 1000, 0
+
+        group.links.new(group_input.outputs["Value"], multiply.inputs[0])
+        group.links.new(group_input.outputs["Vector"], separate_xyz.inputs[0])
         group.links.new(separate_xyz.outputs[2], greater.inputs[0])
         group.links.new(greater.outputs[0], multiply.inputs[1])
-        group.links.new(multiply.outputs[0], group_output.inputs[""])
+        group.links.new(multiply.outputs[0], group_output.inputs["Value"])
+        group.links.new(separate_xyz.outputs[2], compare.inputs[0])
+        group.links.new(compare.outputs[0], add_line_decorator.inputs[0])
+        group.links.new(group_input.outputs["Line Decorator"], add_line_decorator.inputs[1])
+        group.links.new(multiply.outputs[0], multiply_line_decorator.inputs[0])
+        group.links.new(add_line_decorator.outputs[0], multiply_line_decorator.inputs[1])
+        group.links.new(multiply_line_decorator.outputs[0], group_output.inputs["Line Decorator"])
 
     def create_section_override_node(self, obj, context):
         group = bpy.data.node_groups.new("Section Override", type="ShaderNodeTree")
+        if bpy.app.version >= (4, 0, 0):
+            group.interface.new_socket(name="Shader", in_out="INPUT", socket_type="NodeSocketShader")
+            group.interface.new_socket(name="Shader", in_out="OUTPUT", socket_type="NodeSocketShader")
+        else:
+            group.inputs.new("NodeSocketShader", "Shader")
+            group.outputs.new("NodeSocketShader", "Shader")
         links = group.links
         nodes = group.nodes
 
         group_input = nodes.new(type="NodeGroupInput")
         group_output = nodes.new(type="NodeGroupOutput")
-        group_output.location = 600, 250
+        group_output.location = 800, 250
 
-        backfacing_mix = nodes.new(type="ShaderNodeMixShader")
-        backfacing_mix.location = group_output.location - Vector((400, 350))
+        mix_decorator = group.nodes.new(type="ShaderNodeMixShader")
+        mix_decorator.name = "Line Decorator Mix"
+        mix_decorator.inputs[0].default_value = 0  # Directly pass input shader when there is no cutaway
+        mix_decorator.location = group_output.location - Vector((200, 0))
+
+        mix_section = group.nodes.new(type="ShaderNodeMixShader")
+        mix_section.name = "Section Mix"
+        mix_section.inputs[0].default_value = 1  # Directly pass input shader when there is no cutaway
+        mix_section.location = mix_decorator.location - Vector((200, 200))
+
+        transparent = nodes.new(type="ShaderNodeBsdfTransparent")
+        transparent.location = mix_section.location - Vector((200, 100))
+
+        mix_backfacing = nodes.new(type="ShaderNodeMixShader")
+        mix_backfacing.location = mix_section.location - Vector((200, 0))
+
+        group_input.location = mix_backfacing.location - Vector((200, 50))
 
         backfacing = nodes.new(type="ShaderNodeNewGeometry")
-        backfacing.location = backfacing_mix.location + Vector((-200, 200))
-        group_input.location = backfacing_mix.location - Vector((200, 50))
+        backfacing.location = mix_backfacing.location + Vector((-200, 200))
 
         emission = nodes.new(type="ShaderNodeEmission")
         emission.inputs[0].default_value = list(context.scene.BIMProperties.section_plane_colour) + [1]
-        emission.location = backfacing_mix.location - Vector((200, 150))
-
-        transparent = nodes.new(type="ShaderNodeBsdfTransparent")
-        transparent.location = group_output.location - Vector((400, 100))
-
-        section_mix = group.nodes.new(type="ShaderNodeMixShader")
-        section_mix.name = "Section Mix"
-        section_mix.inputs[0].default_value = 1  # Directly pass input shader when there is no cutaway
-        section_mix.location = group_output.location - Vector((200, 0))
+        emission.location = mix_backfacing.location - Vector((200, 150))
 
         cut_obj = nodes.new(type="ShaderNodeTexCoord")
         cut_obj.object = obj
-        cut_obj.location = group_output.location - Vector((800, 150))
+        cut_obj.location = backfacing.location - Vector((200, 200))
 
         section_compare = nodes.new(type="ShaderNodeGroup")
         section_compare.node_tree = bpy.data.node_groups.get("Section Compare")
         section_compare.name = "Last Section Compare"
-        section_compare.location = group_output.location - Vector((600, 0))
+        section_compare.location = backfacing.location + Vector((0, 200))
 
         links.new(cut_obj.outputs["Object"], section_compare.inputs[1])
-        links.new(backfacing.outputs["Backfacing"], backfacing_mix.inputs[0])
-        links.new(group_input.outputs[""], backfacing_mix.inputs[1])
-        links.new(emission.outputs["Emission"], backfacing_mix.inputs[2])
-        links.new(section_compare.outputs[0], section_mix.inputs[0])
-        links.new(transparent.outputs["BSDF"], section_mix.inputs[1])
-        links.new(backfacing_mix.outputs["Shader"], section_mix.inputs[2])
-        links.new(section_mix.outputs["Shader"], group_output.inputs[""])
+        links.new(backfacing.outputs["Backfacing"], mix_backfacing.inputs[0])
+        links.new(group_input.outputs["Shader"], mix_backfacing.inputs[1])
+        links.new(emission.outputs["Emission"], mix_backfacing.inputs[2])
+        links.new(section_compare.outputs["Value"], mix_section.inputs[0])
+        links.new(transparent.outputs[0], mix_section.inputs[1])
+        links.new(mix_backfacing.outputs["Shader"], mix_section.inputs[2])
+        links.new(section_compare.outputs["Line Decorator"], mix_decorator.inputs[0])
+        links.new(mix_section.outputs["Shader"], mix_decorator.inputs[1])
+        links.new(mix_decorator.outputs["Shader"], group_output.inputs["Shader"])
 
     def append_obj_to_section_override_node(self, obj):
         group = bpy.data.node_groups.get("Section Override")
@@ -285,7 +564,15 @@ class BIM_OT_add_section_plane(bpy.types.Operator):
         cut_obj.object = obj
         cut_obj.location = last_section_node.location - Vector((400, 150)) - offset
 
-        group.links.new(section_compare.outputs[0], last_section_node.inputs[0])
+        group.links.new(section_compare.outputs["Value"], last_section_node.inputs[0])
+        group.links.new(
+            section_compare.outputs["Line Decorator"],
+            (
+                last_section_node.inputs["Line Decorator"]
+                if "Line Decorator" in last_section_node.inputs
+                else group.nodes.get("Line Decorator Mix").inputs[0]
+            ),
+        )
         group.links.new(cut_obj.outputs["Object"], section_compare.inputs[1])
 
         section_compare.name = "Last Section Compare"
@@ -321,7 +608,7 @@ class BIM_OT_add_section_plane(bpy.types.Operator):
                 continue
             material.blend_method = "HASHED"
             material.shadow_method = "HASHED"
-            material_output = self.get_node(material.node_tree.nodes, "OUTPUT_MATERIAL")
+            material_output = tool.Blender.get_material_node(material, "OUTPUT_MATERIAL", {"is_active_output": True})
             if not material_output:
                 continue
             from_socket = material_output.inputs[0].links[0].from_socket
@@ -330,11 +617,6 @@ class BIM_OT_add_section_plane(bpy.types.Operator):
             section_override.node_tree = override
             material.node_tree.links.new(from_socket, section_override.inputs[0])
             material.node_tree.links.new(section_override.outputs[0], material_output.inputs[0])
-
-    def get_node(self, nodes, node_type):
-        for node in nodes:
-            if node.type == node_type:
-                return node
 
 
 class BIM_OT_remove_section_plane(bpy.types.Operator):
@@ -365,6 +647,14 @@ class BIM_OT_remove_section_plane(bpy.types.Operator):
                 previous_section_compare = section_compare.inputs[0].links[0].from_node
                 next_section_compare = section_compare.outputs[0].links[0].to_node
                 section_override.links.new(previous_section_compare.outputs[0], next_section_compare.inputs[0])
+                section_override.links.new(
+                    previous_section_compare.outputs[1],
+                    (
+                        next_section_compare.inputs["Line Decorator"]
+                        if "Line Decorator" in next_section_compare.inputs
+                        else next_section_compare.inputs[0]
+                    ),
+                )
                 self.offset_previous_nodes(section_compare, offset_x=200)
             section_override.nodes.remove(section_compare)
             section_override.nodes.remove(tex_coords)
@@ -376,8 +666,8 @@ class BIM_OT_remove_section_plane(bpy.types.Operator):
         if section_compare.inputs[0].links:
             previous_section_compare = section_compare.inputs[0].links[0].from_node
             previous_section_compare.location += Vector((offset_x, offset_y))
-            if previous_section_compare.inputs[1].links:
-                previous_section_compare.inputs[1].links[0].from_node.location += Vector((offset_x, offset_y))
+            if previous_section_compare.inputs["Vector"].links:
+                previous_section_compare.inputs["Vector"].links[0].from_node.location += Vector((offset_x, offset_y))
             self.offset_previous_nodes(previous_section_compare, offset_x, offset_y)
 
     def purge_all_section_data(self, context):
@@ -394,18 +684,84 @@ class BIM_OT_remove_section_plane(bpy.types.Operator):
             material.node_tree.nodes.remove(override)
         bpy.data.node_groups.remove(bpy.data.node_groups.get("Section Override"))
         bpy.data.node_groups.remove(bpy.data.node_groups.get("Section Compare"))
-        bpy.ops.object.delete({"selected_objects": [context.active_object]})
+        with context.temp_override(selected_objects=[context.active_object]):
+            bpy.ops.object.delete()
 
 
-class ReloadIfcFile(bpy.types.Operator):
+class ReloadIfcFile(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.reload_ifc_file"
     bl_label = "Reload IFC File"
     bl_options = {"REGISTER", "UNDO"}
-    bl_description = "Reload the same IFC file"
+    bl_description = "Reload an updated IFC file"
+    filepath: bpy.props.StringProperty(subtype="FILE_PATH")
+    filter_glob: bpy.props.StringProperty(default="*.ifc", options={"HIDDEN"})
 
-    def execute(self, context):
-        # TODO: reimplement. See #1222.
+    def _execute(self, context):
+        import ifcdiff
+
+        old = tool.Ifc.get()
+        new = ifcopenshell.open(self.filepath)
+
+        ifc_diff = ifcdiff.IfcDiff(old, new, relationships=[])
+        ifc_diff.diff()
+
+        changed_elements = set([k for k, v in ifc_diff.change_register.items() if "geometry_changed" in v])
+
+        for global_id in ifc_diff.deleted_elements | changed_elements:
+            element = tool.Ifc.get().by_guid(global_id)
+            obj = tool.Ifc.get_object(element)
+            if obj:
+                bpy.data.objects.remove(obj)
+
+        # STEP IDs may change, but we assume the GlobalID to be constant
+        obj_map = {}
+        for obj in bpy.data.objects:
+            if obj.library:
+                continue
+            element = tool.Ifc.get_entity(obj)
+            if element and hasattr(element, "GlobalId"):
+                obj_map[obj.name] = element.GlobalId
+
+        delta_elements = [new.by_guid(global_id) for global_id in ifc_diff.added_elements | changed_elements]
+        tool.Ifc.set(new)
+
+        for obj in bpy.data.objects:
+            if obj.library:
+                continue
+            global_id = obj_map.get(obj.name)
+            if global_id:
+                try:
+                    tool.Ifc.link(new.by_guid(global_id), obj)
+                except:
+                    # Still prototyping, so things like types definitely won't work
+                    print("Could not relink", obj)
+
+        start = time.time()
+        logger = logging.getLogger("ImportIFC")
+        path_log = os.path.join(context.scene.BIMProperties.data_dir, "process.log")
+        if not os.access(context.scene.BIMProperties.data_dir, os.W_OK):
+            path_log = os.path.join(tempfile.mkdtemp(), "process.log")
+        logging.basicConfig(
+            filename=path_log,
+            filemode="a",
+            level=logging.DEBUG,
+        )
+        settings = import_ifc.IfcImportSettings.factory(context, self.filepath, logger)
+        settings.has_filter = True
+        settings.should_filter_spatial_elements = False
+        settings.elements = delta_elements
+        settings.logger.info("Starting import")
+        ifc_importer = import_ifc.IfcImporter(settings)
+        ifc_importer.execute()
+        settings.logger.info("Import finished in {:.2f} seconds".format(time.time() - start))
+        print("Import finished in {:.2f} seconds".format(time.time() - start))
+
+        context.scene.BIMProperties.ifc_file = self.filepath
         return {"FINISHED"}
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
 
 
 class AddIfcFile(bpy.types.Operator):
@@ -506,45 +862,20 @@ class FetchObjectPassport(bpy.types.Operator):
         context.active_object.data = bpy.data.meshes[reference.name]
 
 
-class ConfigureVisibility(bpy.types.Operator):
-    bl_idname = "bim.configure_visibility"
-    bl_label = "Configure module UI visibility in BlenderBIM"
-    bl_options = {"REGISTER", "UNDO"}
-
-    def invoke(self, context, event):
-        from blenderbim.bim import modules
-
-        wm = context.window_manager
-        if not len(context.scene.BIMProperties.module_visibility):
-            for module in sorted(modules.keys()):
-                new = context.scene.BIMProperties.module_visibility.add()
-                new.name = module
-        return wm.invoke_props_dialog(self, width=450)
-
-    def draw(self, context):
-        layout = self.layout
-
-        layout.prop(context.scene.BIMProperties, "ui_preset")
-        layout.separator()
-        layout.label(text="Adjust the modules to your liking:")
-
-        grid = layout.column_flow(columns=3)
-        for module in context.scene.BIMProperties.module_visibility:
-            split = grid.split()
-            col = split.column()
-            col.label(text=module.name.capitalize())
-
-            col = split.column()
-            col.prop(module, "is_visible", text="")
-
-    def execute(self, context):
-        return {"FINISHED"}
-
-
 def update_enum_property_search_prop(self, context):
     for i, prop in enumerate(self.collection_names):
         if prop.name == self.dummy_name:
             setattr(context.data, self.prop_name, self.collection_identifiers[i].name)
+            predefined_type = self.collection_predefined_types[i].name
+            if self.first_launch:
+                self.first_launch = False
+            else:
+                context.window.screen = context.window.screen
+            if predefined_type:
+                try:
+                    setattr(context.data, "ifc_predefined_type", predefined_type)
+                except TypeError:  # User clicked on a suggestion, but it's not a predefined type
+                    pass
             break
 
 
@@ -552,9 +883,11 @@ class BIM_OT_enum_property_search(bpy.types.Operator):
     bl_idname = "bim.enum_property_search"
     bl_label = "Search For Property"
     bl_options = {"REGISTER", "UNDO"}
+    first_launch: bpy.props.BoolProperty(default=True, options={"SKIP_SAVE"})
     dummy_name: bpy.props.StringProperty(name="Property", update=update_enum_property_search_prop)
     collection_names: bpy.props.CollectionProperty(type=StrProperty)
     collection_identifiers: bpy.props.CollectionProperty(type=StrProperty)
+    collection_predefined_types: bpy.props.CollectionProperty(type=StrProperty)
     prop_name: bpy.props.StringProperty()
 
     def invoke(self, context, event):
@@ -579,9 +912,10 @@ class BIM_OT_enum_property_search(bpy.types.Operator):
         self.collection_names.clear()
         self.collection_identifiers.clear()
 
-    def add_item(self, identifier: str, name: str):
+    def add_item(self, identifier: str, name: str, predefined_type: str = ""):
         self.collection_identifiers.add().name = identifier
         self.collection_names.add().name = name
+        self.collection_predefined_types.add().name = predefined_type
 
     def add_items_regular(self, items):
         self.identifiers = []
@@ -597,17 +931,48 @@ class BIM_OT_enum_property_search(bpy.types.Operator):
             mapping = getter_suggestions.get(self.prop_name)
             if mapping is None:
                 return
-            for key, values in mapping().items():
+            for key, suggestions in mapping().items():
                 if key in self.identifiers:
-                    if not isinstance(values, (tuple, list)):
-                        values = [values]
-                    for value in values:
-                        self.add_item(identifier=key, name=key + " (" + value + ")")
+                    if not isinstance(suggestions, (tuple, list)):
+                        suggestions = [suggestions]
+                    for suggestion in suggestions:
+                        predefined_type = suggestion.get("predefined_type", "NOTDEFINED").upper()
+                        name = suggestion.get("name")
+                        self.add_item(
+                            identifier=key,
+                            name=f"{key} > {name if name else predefined_type }",
+                            predefined_type=predefined_type,
+                        )
+
+
+class BIM_OT_select_object(bpy.types.Operator):
+    bl_idname = "bim.select_object"
+    bl_label = "Select Object"
+    bl_options = {"REGISTER", "UNDO"}
+    obj_name: bpy.props.StringProperty(description="Object Name To Select")
+
+    def execute(self, context):
+        obj = bpy.data.objects[self.obj_name]
+        tool.Blender.set_objects_selection(context, obj, [obj], clear_previous_selection=True)
+        return {"FINISHED"}
+
+
+class BIM_OT_delete_object(bpy.types.Operator):
+    bl_idname = "bim.delete_object"
+    bl_label = "Delete Object"
+    bl_options = {"REGISTER", "UNDO"}
+    obj_name: bpy.props.StringProperty(description="Object Name To Delete")
+
+    def execute(self, context):
+        obj = bpy.data.objects[self.obj_name]
+        with context.temp_override(selected_objects=[obj], active_object=obj):
+            bpy.ops.bim.override_object_delete(is_batch=False)
+        return {"FINISHED"}
 
 
 class EditBlenderCollection(bpy.types.Operator):
     bl_idname = "bim.edit_blender_collection"
-    bl_label = "Add or Remove blender collection item"
+    bl_label = "Add or Remove Blender Collection Item"
     bl_options = {"REGISTER", "UNDO"}
     option: bpy.props.StringProperty(description="add or remove item from collection")
     collection: bpy.props.StringProperty(description="collection to be edited")
@@ -619,3 +984,152 @@ class EditBlenderCollection(bpy.types.Operator):
         else:
             getattr(context.bim_prop_group, self.collection).remove(self.index)
         return {"FINISHED"}
+
+
+class BIM_OT_show_description(bpy.types.Operator):
+    bl_idname = "bim.show_description"
+    bl_label = "Description"
+    attr_name: bpy.props.StringProperty()
+    description: bpy.props.StringProperty()
+    url: bpy.props.StringProperty()
+
+    def invoke(self, context, event):
+        wm = context.window_manager
+        return wm.invoke_props_dialog(self, width=450)
+
+    def execute(self, context):
+        return {"FINISHED"}
+
+    def draw(self, context):
+        layout = self.layout
+        wrapper = textwrap.TextWrapper(width=80)
+        for line in wrapper.wrap(self.attr_name + " : " + self.description):
+            layout.label(text=line)
+        if self.url:
+            url_op = layout.operator("bim.open_webbrowser", icon="URL", text="Online IFC Documentation")
+            url_op.url = self.url
+
+    @classmethod
+    def description(cls, context, properties):
+        return properties.description
+
+
+CuttingPlaneData = namedtuple("CuttingPlaneData", ["co", "normal"])
+
+
+class ClippingPlaneCutWithCappings(bpy.types.Operator):
+    bl_idname = "bim.clipping_plane_cut_with_cappings"
+    bl_label = "Cut With Clipping Planes"
+    bl_description = "Cut selected objects with clipping planes and create cappings"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        cutting_planes = [p.obj for p in context.scene.BIMProjectProperties.clipping_planes]
+        if not cutting_planes:
+            self.report({"INFO"}, "No cutting planes found.")
+            return {"FINISHED"}
+        cutting_planes_data = self.get_cutting_plane_data(cutting_planes)
+
+        wm = context.window_manager
+        objects_processed, t0 = 0, time.time()
+        wm.progress_begin(0, len(context.selected_objects))
+        for obj_i, obj in enumerate(context.selected_objects):
+            if obj.type != "MESH":
+                continue
+
+            if obj in cutting_planes:
+                continue
+
+            RevertClippingPlaneCut.revert_object_mesh(self, obj)
+
+            # localize matrix to consider object's transform
+            ws_to_ls = obj.matrix_world.inverted()
+            rotation = ws_to_ls.to_quaternion()
+
+            mesh = obj.data
+            bm = tool.Blender.get_bmesh_for_mesh(mesh)
+            object_changed = False
+
+            for plane_data in cutting_planes_data:
+                geom = bm.verts[:] + bm.edges[:] + bm.faces[:]
+                plane_co = ws_to_ls @ plane_data.co
+                plane_no = rotation @ plane_data.normal
+                # clear_outer -> remove everything in direction of the normal
+                results = bmesh.ops.bisect_plane(
+                    bm,
+                    geom=geom,
+                    dist=10e-4,
+                    plane_co=plane_co,
+                    plane_no=plane_no,
+                    clear_outer=True,
+                )
+                edges_to_fill = [e for e in results["geom_cut"] if isinstance(e, bmesh.types.BMEdge)]
+                object_changed = object_changed or edges_to_fill
+                bmesh.ops.contextual_create(bm, geom=edges_to_fill)
+
+            # don't swap mesh if it wasn't affected by any of the cutting planes
+            if object_changed:
+                temp_mesh = bpy.data.meshes.new("temp_cut")
+                temp_mesh.BIMMeshProperties.replaced_mesh = mesh
+                for material in mesh.materials:
+                    temp_mesh.materials.append(material)
+                obj.data = temp_mesh
+                tool.Blender.apply_bmesh(temp_mesh, bm, obj)
+
+            objects_processed += 1
+            wm.progress_update(obj_i)
+
+        self.report({"INFO"}, f"{objects_processed} processed - {time.time()-t0:.3f} sec")
+
+        return {"FINISHED"}
+
+    def get_cutting_plane_data(self, cutting_planes: List[bpy.types.Object]) -> List[CuttingPlaneData]:
+        cutting_planes_data = []
+
+        for obj in cutting_planes:
+            cutting_matrix = obj.matrix_world
+            plane_data = CuttingPlaneData(cutting_matrix.translation, cutting_matrix.col[2].to_3d())
+            cutting_planes_data.append(plane_data)
+
+        return cutting_planes_data
+
+    # NOTE: unused, will be used later for cutting boxes support
+    def get_box_cutting_plane_data(self, obj: bpy.types.Object) -> List[CuttingPlaneData]:
+        matrix_world = obj.matrix_world
+        rotation = matrix_world.to_quaternion()  # avoid scale for normals
+        cutting_planes_data = []
+        for p in obj.data.polygons:
+            plane_data = CuttingPlaneData(matrix_world @ p.center, rotation @ p.normal)
+            cutting_planes_data.append(plane_data)
+        return cutting_planes_data
+
+
+class RevertClippingPlaneCut(bpy.types.Operator):
+    bl_idname = "bim.revert_clipping_plane_cut"
+    bl_label = "Revert Clipping Plane Cut"
+    bl_description = "Revert clipping plane cut (switch back to the original mesh)"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        obj = context.active_object
+        wm = context.window_manager
+
+        objects_processed, t0 = 0, time.time()
+        wm.progress_begin(0, len(context.selected_objects))
+        for obj_i, obj in enumerate(context.selected_objects):
+            if obj.type != "MESH":
+                continue
+            self.revert_object_mesh(obj)
+            objects_processed += 1
+            wm.progress_update(obj_i)
+        wm.progress_end()
+
+        self.report({"INFO"}, f"{objects_processed} processed - {time.time()-t0:.3f} sec")
+        return {"FINISHED"}
+
+    def revert_object_mesh(self, obj):
+        mesh = obj.data
+        replaced_mesh = mesh.BIMMeshProperties.replaced_mesh
+        if replaced_mesh:
+            obj.data = replaced_mesh
+            tool.Blender.remove_data_block(mesh, do_unlink=False)

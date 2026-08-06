@@ -19,7 +19,101 @@
 import pytest
 import test.bootstrap
 import ifcopenshell.api
+import ifcopenshell.guid
 import ifcopenshell.util.element as subject
+
+
+class TestGetPsetIFC4(test.bootstrap.IFC4):
+    def test_getting_the_psets_of_a_product_as_a_dictionary(self):
+        element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
+        assert subject.get_pset(element, "name") is None
+        assert subject.get_pset(element, "name", "a") is None
+        pset = ifcopenshell.api.run("pset.add_pset", self.file, product=element, name="name")
+        ifcopenshell.api.run("pset.edit_pset", self.file, pset=pset, properties={"a": "b"})
+        assert subject.get_pset(element, "name") == {"a": "b", "id": pset.id()}
+        assert subject.get_pset(element, "name", "a") == "b"
+        assert subject.get_pset(element, "name", "a", verbose=True) == {
+            "id": 4,
+            "class": "IfcPropertySingleValue",
+            "value": "b",
+        }
+
+    def test_getting_the_psets_of_a_product_type_as_a_dictionary(self):
+        type_element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWallType")
+        foo = subject.get_pset(type_element, "name") is None
+        pset = ifcopenshell.api.run("pset.add_pset", self.file, product=type_element, name="name")
+        ifcopenshell.api.run("pset.edit_pset", self.file, pset=pset, properties={"x": "y"})
+        assert subject.get_pset(type_element, "name") == {"x": "y", "id": pset.id()}
+        assert subject.get_pset(type_element, "name", verbose=True) == {
+            "x": {
+                "id": 3,
+                "class": "IfcPropertySingleValue",
+                "value": "y",
+            },
+            "id": pset.id(),
+        }
+
+    def test_getting_inherited_psets(self):
+        element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
+        type_element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWallType")
+        ifcopenshell.api.run("type.assign_type", self.file, related_objects=[element], relating_type=type_element)
+        pset = ifcopenshell.api.run("pset.add_pset", self.file, product=type_element, name="name")
+        ifcopenshell.api.run("pset.edit_pset", self.file, pset=pset, properties={"a": 1, "x": 1})
+        pset = ifcopenshell.api.run("pset.add_pset", self.file, product=element, name="name")
+        ifcopenshell.api.run("pset.edit_pset", self.file, pset=pset, properties={"a": 2, "b": 3})
+        result = subject.get_pset(element, "name")
+        assert result["id"] == pset.id()
+        assert result["a"] == 2
+        assert result["x"] == 1
+        assert result["b"] == 3
+        assert subject.get_pset(element, "name", "a") == 2
+        assert subject.get_pset(element, "name", "x") == 1
+        assert subject.get_pset(element, "name", "b") == 3
+        pset = ifcopenshell.api.run("pset.add_pset", self.file, product=type_element, name="name2")
+        ifcopenshell.api.run("pset.edit_pset", self.file, pset=pset, properties={"z": False})
+        assert subject.get_pset(element, "name2", "z") is False
+
+        # test filters with inherited psets
+        assert subject.get_pset(element, "name", psets_only=True) == result
+        assert subject.get_pset(element, "name", qtos_only=True) == None
+
+    def test_excluding_inherited_psets(self):
+        element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
+        type_element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWallType")
+        ifcopenshell.api.run("type.assign_type", self.file, related_objects=[element], relating_type=type_element)
+        pset = ifcopenshell.api.run("pset.add_pset", self.file, product=type_element, name="name")
+        ifcopenshell.api.run("pset.edit_pset", self.file, pset=pset, properties={"a": 1, "x": 1})
+        pset = ifcopenshell.api.run("pset.add_pset", self.file, product=element, name="name")
+        ifcopenshell.api.run("pset.edit_pset", self.file, pset=pset, properties={"a": 2, "b": 3})
+        result = subject.get_pset(element, "name", should_inherit=False)
+        assert result["id"] == pset.id()
+        assert result["a"] == 2
+        assert result["b"] == 3
+        assert "x" not in result
+        assert subject.get_pset(element, "name", "a") == 2
+        assert subject.get_pset(element, "name", "b") == 3
+
+    def test_getting_the_psets_of_a_material_as_a_dictionary(self):
+        material = self.file.createIfcMaterial()
+        assert subject.get_pset(material, "name") is None
+        assert subject.get_pset(material, "name", "x") is None
+        pset = ifcopenshell.api.run("pset.add_pset", self.file, product=material, name="name")
+        ifcopenshell.api.run("pset.edit_pset", self.file, pset=pset, properties={"x": "y"})
+        assert subject.get_pset(material, "name") == {"x": "y", "id": pset.id()}
+        assert subject.get_pset(material, "name", "x") == "y"
+
+    def test_getting_the_psets_of_a_profile_as_a_dictionary(self):
+        profile = self.file.createIfcCircleProfileDef()
+        assert subject.get_pset(profile, "name") is None
+        assert subject.get_pset(profile, "name", "x") is None
+        pset = ifcopenshell.api.run("pset.add_pset", self.file, product=profile, name="name")
+        ifcopenshell.api.run("pset.edit_pset", self.file, pset=pset, properties={"x": "y"})
+        assert subject.get_pset(profile, "name") == {"x": "y", "id": pset.id()}
+        assert subject.get_pset(profile, "name", "x") == "y"
+
+    def test_getting_psets_from_an_element_which_cannot_have_psets(self):
+        assert subject.get_pset(self.file.create_entity("IfcPerson"), "name") is None
+        assert subject.get_pset(self.file.create_entity("IfcPerson"), "name", "a") is None
 
 
 class TestGetPsetsIFC4(test.bootstrap.IFC4):
@@ -40,7 +134,7 @@ class TestGetPsetsIFC4(test.bootstrap.IFC4):
     def test_getting_inherited_psets(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         type_element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWallType")
-        ifcopenshell.api.run("type.assign_type", self.file, related_object=element, relating_type=type_element)
+        ifcopenshell.api.run("type.assign_type", self.file, related_objects=[element], relating_type=type_element)
         pset = ifcopenshell.api.run("pset.add_pset", self.file, product=type_element, name="name")
         ifcopenshell.api.run("pset.edit_pset", self.file, pset=pset, properties={"a": 1, "x": 1})
         pset = ifcopenshell.api.run("pset.add_pset", self.file, product=element, name="name")
@@ -170,14 +264,14 @@ class TestGetPredefinedTypeIFC4(test.bootstrap.IFC4):
     def test_getting_an_inherited_predefined_type(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         element_type = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWallType")
-        ifcopenshell.api.run("type.assign_type", self.file, related_object=element, relating_type=element_type)
+        ifcopenshell.api.run("type.assign_type", self.file, related_objects=[element], relating_type=element_type)
         element_type.PredefinedType = "PARTITIONING"
         assert subject.get_predefined_type(element) == "PARTITIONING"
 
     def test_getting_an_inherited_userdefined_type_for_an_element_type(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         element_type = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWallType")
-        ifcopenshell.api.run("type.assign_type", self.file, related_object=element, relating_type=element_type)
+        ifcopenshell.api.run("type.assign_type", self.file, related_objects=[element], relating_type=element_type)
         element_type.PredefinedType = "USERDEFINED"
         element_type.ElementType = "FOOBAR"
         assert subject.get_predefined_type(element) == "FOOBAR"
@@ -185,7 +279,7 @@ class TestGetPredefinedTypeIFC4(test.bootstrap.IFC4):
     def test_getting_an_overriden_predefined_type(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         element_type = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWallType")
-        ifcopenshell.api.run("type.assign_type", self.file, related_object=element, relating_type=element_type)
+        ifcopenshell.api.run("type.assign_type", self.file, related_objects=[element], relating_type=element_type)
         element_type.PredefinedType = "NOTDEFINED"
         element.PredefinedType = "PARTITIONING"
         assert subject.get_predefined_type(element) == "PARTITIONING"
@@ -193,142 +287,233 @@ class TestGetPredefinedTypeIFC4(test.bootstrap.IFC4):
     def test_getting_an_inherited_userdefined_type_for_a_process_type(self):
         element = ifcopenshell.api.run("sequence.add_task", self.file)
         element_type = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcTaskType")
-        ifcopenshell.api.run("type.assign_type", self.file, related_object=element, relating_type=element_type)
+        ifcopenshell.api.run("type.assign_type", self.file, related_objects=[element], relating_type=element_type)
         element_type.PredefinedType = "USERDEFINED"
         element_type.ProcessType = "FOOBAR"
         assert subject.get_predefined_type(element) == "FOOBAR"
+
+    def test_getting_an_element_type_predefined_type(self):
+        element_type = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWallType")
+        element_type.PredefinedType = "PARTITIONING"
+        assert subject.get_predefined_type(element_type) == "PARTITIONING"
+
+    def test_getting_an_element_type_null_predefined_type(self):
+        element_type = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWallType")
+        element_type.PredefinedType = "NOTDEFINED"
+        assert subject.get_predefined_type(element_type) == "NOTDEFINED"
 
 
 class TestGetTypeIFC4(test.bootstrap.IFC4):
     def test_getting_the_type_of_a_product(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         element_type = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWallType")
-        ifcopenshell.api.run("type.assign_type", self.file, related_object=element, relating_type=element_type)
+        ifcopenshell.api.run("type.assign_type", self.file, related_objects=[element], relating_type=element_type)
         assert subject.get_type(element) == element_type
         assert subject.get_type(element_type) == element_type
 
 
-class TestGetTypeIFC2X3(test.bootstrap.IFC2X3):
-    def test_getting_the_type_of_a_product(self):
-        element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
-        element_type = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWallType")
-        ifcopenshell.api.run("type.assign_type", self.file, related_object=element, relating_type=element_type)
-        assert subject.get_type(element) == element_type
-        assert subject.get_type(element_type) == element_type
+class TestGetTypeIFC2X3(test.bootstrap.IFC2X3, TestGetTypeIFC4):
+    pass
 
 
 class TestGetTypes(test.bootstrap.IFC4):
     def test_getting_the_type_of_a_product(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         element_type = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWallType")
-        ifcopenshell.api.run("type.assign_type", self.file, related_object=element, relating_type=element_type)
+        ifcopenshell.api.run("type.assign_type", self.file, related_objects=[element], relating_type=element_type)
         assert subject.get_types(element_type) == (element,)
 
 
-class TestGetTypesIFC2X3(test.bootstrap.IFC2X3):
-    def test_getting_the_type_of_a_product(self):
-        element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
+class TestGetTypesIFC2X3(test.bootstrap.IFC2X3, TestGetTypes):
+    pass
+
+
+class TestGetShapeAspects(test.bootstrap.IFC4):
+    def test_getting_the_shape_aspects_of_a_product_type(self):
         element_type = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWallType")
-        ifcopenshell.api.run("type.assign_type", self.file, related_object=element, relating_type=element_type)
-        assert subject.get_types(element_type) == (element,)
+        shape_aspect = self.file.createIfcShapeAspect()
+        representation_map = self.file.createIfcRepresentationMap()
+        element_type.RepresentationMaps = (representation_map,)
+        shape_aspect.PartOfProductDefinitionShape = representation_map
+        assert tuple(subject.get_shape_aspects(element_type)) == (shape_aspect,)
+
+    def test_getting_the_shape_aspects_of_a_product(self):
+        element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
+        shape_aspect = self.file.createIfcShapeAspect()
+        product_shape = self.file.createIfcProductDefinitionShape()
+        element.Representation = product_shape
+        shape_aspect.PartOfProductDefinitionShape = product_shape
+        assert tuple(subject.get_shape_aspects(element)) == (shape_aspect,)
 
 
 class TestGetMaterial(test.bootstrap.IFC4):
     def test_getting_the_material_of_a_product(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         material = ifcopenshell.api.run("material.add_material", self.file)
-        ifcopenshell.api.run("material.assign_material", self.file, product=element, material=material)
+        ifcopenshell.api.run("material.assign_material", self.file, products=[element], material=material)
         assert subject.get_material(element) == material
 
     def test_getting_a_material_list_of_a_product(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         material = ifcopenshell.api.run("material.add_material", self.file)
         rel = ifcopenshell.api.run(
-            "material.assign_material", self.file, product=element, type="IfcMaterialList", material=material
+            "material.assign_material", self.file, products=[element], type="IfcMaterialList", material=material
         )
         assert subject.get_material(element) == rel.RelatingMaterial
 
     def test_getting_a_material_layer_set_of_a_product(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
-        rel = ifcopenshell.api.run("material.assign_material", self.file, product=element, type="IfcMaterialLayerSet")
+        rel = ifcopenshell.api.run(
+            "material.assign_material", self.file, products=[element], type="IfcMaterialLayerSet"
+        )
         assert subject.get_material(element) == rel.RelatingMaterial
 
     def test_getting_a_material_profile_set_of_a_product(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
-        rel = ifcopenshell.api.run("material.assign_material", self.file, product=element, type="IfcMaterialProfileSet")
+        rel = ifcopenshell.api.run(
+            "material.assign_material", self.file, products=[element], type="IfcMaterialProfileSet"
+        )
         assert subject.get_material(element) == rel.RelatingMaterial
 
     def test_getting_a_material_layer_set_usage_of_a_product(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         rel = ifcopenshell.api.run(
-            "material.assign_material", self.file, product=element, type="IfcMaterialLayerSetUsage"
+            "material.assign_material", self.file, products=[element], type="IfcMaterialLayerSetUsage"
         )
         assert subject.get_material(element) == rel.RelatingMaterial
 
     def test_getting_a_material_profile_set_usage_of_a_product(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         rel = ifcopenshell.api.run(
-            "material.assign_material", self.file, product=element, type="IfcMaterialProfileSetUsage"
+            "material.assign_material", self.file, products=[element], type="IfcMaterialProfileSetUsage"
         )
         assert subject.get_material(element) == rel.RelatingMaterial
 
     def test_getting_a_material_layer_set_indirectly_from_an_assigned_usage(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         rel = ifcopenshell.api.run(
-            "material.assign_material", self.file, product=element, type="IfcMaterialLayerSetUsage"
+            "material.assign_material", self.file, products=[element], type="IfcMaterialLayerSetUsage"
         )
         assert subject.get_material(element, should_skip_usage=True) == rel.RelatingMaterial.ForLayerSet
 
     def test_getting_a_material_profile_set_indirectly_from_an_assigned_usage(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         rel = ifcopenshell.api.run(
-            "material.assign_material", self.file, product=element, type="IfcMaterialProfileSetUsage"
+            "material.assign_material", self.file, products=[element], type="IfcMaterialProfileSetUsage"
         )
         assert subject.get_material(element, should_skip_usage=True) == rel.RelatingMaterial.ForProfileSet
 
     def test_getting_an_inherited_material_from_the_elements_type(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         element_type = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWallType")
-        ifcopenshell.api.run("type.assign_type", self.file, related_object=element, relating_type=element_type)
+        ifcopenshell.api.run("type.assign_type", self.file, related_objects=[element], relating_type=element_type)
         material = ifcopenshell.api.run("material.add_material", self.file)
-        ifcopenshell.api.run("material.assign_material", self.file, product=element_type, material=material)
+        ifcopenshell.api.run("material.assign_material", self.file, products=[element_type], material=material)
         assert subject.get_material(element) == material
 
     def test_getting_an_overridden_material_from_the_elements_occurrence(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         element_type = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWallType")
-        ifcopenshell.api.run("type.assign_type", self.file, related_object=element, relating_type=element_type)
+        ifcopenshell.api.run("type.assign_type", self.file, related_objects=[element], relating_type=element_type)
         material = ifcopenshell.api.run("material.add_material", self.file)
-        ifcopenshell.api.run("material.assign_material", self.file, product=element_type, material=material)
+        ifcopenshell.api.run("material.assign_material", self.file, products=[element_type], material=material)
         material = ifcopenshell.api.run("material.add_material", self.file)
-        ifcopenshell.api.run("material.assign_material", self.file, product=element, material=material)
+        ifcopenshell.api.run("material.assign_material", self.file, products=[element], material=material)
         assert subject.get_material(element) == material
 
     def test_getting_direct_materials_without_checking_inheritance(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         element_type = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWallType")
-        ifcopenshell.api.run("type.assign_type", self.file, related_object=element, relating_type=element_type)
+        ifcopenshell.api.run("type.assign_type", self.file, related_objects=[element], relating_type=element_type)
         material = ifcopenshell.api.run("material.add_material", self.file)
-        ifcopenshell.api.run("material.assign_material", self.file, product=element_type, material=material)
+        ifcopenshell.api.run("material.assign_material", self.file, products=[element_type], material=material)
         assert subject.get_material(element, should_inherit=False) is None
+
+
+class TestGetMaterials(test.bootstrap.IFC4):
+    def test_getting_the_materials_of_a_product(self):
+        element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
+        material = ifcopenshell.api.run("material.add_material", self.file)
+        ifcopenshell.api.run("material.assign_material", self.file, products=[element], material=material)
+        assert subject.get_materials(element) == [material]
+
+
+class TestGetStyles(test.bootstrap.IFC4):
+    def test_getting_the_styles_of_a_product(self):
+        ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcProject")
+        element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
+        assert subject.get_styles(element) == []
+
+        model = ifcopenshell.api.run("context.add_context", self.file, context_type="Model")
+        body = ifcopenshell.api.run(
+            "context.add_context",
+            self.file,
+            context_type="Model",
+            context_identifier="Body",
+            target_view="MODEL_VIEW",
+            parent=model,
+        )
+
+        material = ifcopenshell.api.run("material.add_material", self.file)
+        ifcopenshell.api.run("material.assign_material", self.file, products=[element], material=material)
+
+        style = ifcopenshell.api.run("style.add_style", self.file)
+        ifcopenshell.api.run(
+            "style.add_surface_style",
+            self.file,
+            style=style,
+            ifc_class="IfcSurfaceStyleShading",
+            attributes={
+                "SurfaceColour": {"Name": None, "Red": 1.0, "Green": 0.8, "Blue": 0.8},
+                "Transparency": 0.0,  # 0 is opaque, 1 is transparent
+            },
+        )
+        ifcopenshell.api.run("style.assign_material_style", self.file, material=material, style=style, context=body)
+
+        assert subject.get_styles(element) == [style]
+
+        style2 = ifcopenshell.api.run("style.add_style", self.file)
+        ifcopenshell.api.run(
+            "style.add_surface_style",
+            self.file,
+            style=style2,
+            ifc_class="IfcSurfaceStyleShading",
+            attributes={
+                "SurfaceColour": {"Name": None, "Red": 1.0, "Green": 0.8, "Blue": 0.8},
+                "Transparency": 0.0,  # 0 is opaque, 1 is transparent
+            },
+        )
+
+        representation = ifcopenshell.api.run(
+            "geometry.add_wall_representation", self.file, context=body, length=5, height=3, thickness=0.118
+        )
+
+        ifcopenshell.api.run(
+            "geometry.assign_representation", self.file, product=element, representation=representation
+        )
+        ifcopenshell.api.run(
+            "style.assign_representation_styles", self.file, shape_representation=representation, styles=[style2]
+        )
+
+        assert subject.get_styles(element) == [style, style2]
 
 
 class TestGetElementsByMaterial(test.bootstrap.IFC4):
     def test_getting_elements_of_a_material(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         material = ifcopenshell.api.run("material.add_material", self.file)
-        ifcopenshell.api.run("material.assign_material", self.file, product=element, material=material)
+        ifcopenshell.api.run("material.assign_material", self.file, products=[element], material=material)
         assert subject.get_elements_by_material(self.file, material) == {element}
 
     def test_getting_elements_of_a_material_layer_set(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         element_type = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWallType")
-        ifcopenshell.api.run("type.assign_type", self.file, related_object=element, relating_type=element_type)
+        ifcopenshell.api.run("type.assign_type", self.file, related_objects=[element], relating_type=element_type)
         material = ifcopenshell.api.run("material.add_material", self.file)
         material_set = ifcopenshell.api.run("material.add_material_set", self.file, set_type="IfcMaterialLayerSet")
         ifcopenshell.api.run("material.add_layer", self.file, layer_set=material_set, material=material)
-        ifcopenshell.api.run("material.assign_material", self.file, product=element_type, material=material_set)
-        ifcopenshell.api.run("material.assign_material", self.file, product=element, type="IfcMaterialLayerSetUsage")
+        ifcopenshell.api.run("material.assign_material", self.file, products=[element_type], material=material_set)
+        ifcopenshell.api.run("material.assign_material", self.file, products=[element], type="IfcMaterialLayerSetUsage")
         usage = self.file.by_type("IfcMaterialLayerSetUsage")[0]
         assert subject.get_elements_by_material(self.file, material) == {element, element_type}
         assert subject.get_elements_by_material(self.file, material_set) == {element, element_type}
@@ -337,12 +522,14 @@ class TestGetElementsByMaterial(test.bootstrap.IFC4):
     def test_getting_elements_of_a_material_profile_set(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         element_type = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWallType")
-        ifcopenshell.api.run("type.assign_type", self.file, related_object=element, relating_type=element_type)
+        ifcopenshell.api.run("type.assign_type", self.file, related_objects=[element], relating_type=element_type)
         material = ifcopenshell.api.run("material.add_material", self.file)
         material_set = ifcopenshell.api.run("material.add_material_set", self.file, set_type="IfcMaterialProfileSet")
         ifcopenshell.api.run("material.add_profile", self.file, profile_set=material_set, material=material)
-        ifcopenshell.api.run("material.assign_material", self.file, product=element_type, material=material_set)
-        ifcopenshell.api.run("material.assign_material", self.file, product=element, type="IfcMaterialProfileSetUsage")
+        ifcopenshell.api.run("material.assign_material", self.file, products=[element_type], material=material_set)
+        ifcopenshell.api.run(
+            "material.assign_material", self.file, products=[element], type="IfcMaterialProfileSetUsage"
+        )
         usage = self.file.by_type("IfcMaterialProfileSetUsage")[0]
         assert subject.get_elements_by_material(self.file, material) == {element, element_type}
         assert subject.get_elements_by_material(self.file, material_set) == {element, element_type}
@@ -355,7 +542,7 @@ class TestGetElementsByMaterial(test.bootstrap.IFC4):
             "material.add_material_set", self.file, set_type="IfcMaterialConstituentSet"
         )
         ifcopenshell.api.run("material.add_constituent", self.file, constituent_set=material_set, material=material)
-        ifcopenshell.api.run("material.assign_material", self.file, product=element, material=material_set)
+        ifcopenshell.api.run("material.assign_material", self.file, products=[element], material=material_set)
         assert subject.get_elements_by_material(self.file, material) == {element}
         assert subject.get_elements_by_material(self.file, material_set) == {element}
 
@@ -364,7 +551,7 @@ class TestGetElementsByMaterial(test.bootstrap.IFC4):
         material = ifcopenshell.api.run("material.add_material", self.file)
         material_set = ifcopenshell.api.run("material.add_material_set", self.file, set_type="IfcMaterialList")
         ifcopenshell.api.run("material.add_list_item", self.file, material_list=material_set, material=material)
-        ifcopenshell.api.run("material.assign_material", self.file, product=element, material=material_set)
+        ifcopenshell.api.run("material.assign_material", self.file, products=[element], material=material_set)
         assert subject.get_elements_by_material(self.file, material) == {element}
         assert subject.get_elements_by_material(self.file, material_set) == {element}
 
@@ -415,7 +602,7 @@ class TestGetElementsByStyle(test.bootstrap.IFC4):
     def test_getting_elements_of_a_styled_material(self):
         element = self.file.createIfcWall()
         material = ifcopenshell.api.run("material.add_material", self.file)
-        ifcopenshell.api.run("material.assign_material", self.file, product=element, material=material)
+        ifcopenshell.api.run("material.assign_material", self.file, products=[element], material=material)
         style = self.file.createIfcSurfaceStyle()
         self.file.createIfcMaterialDefinitionRepresentation(
             RepresentedMaterial=material,
@@ -441,9 +628,7 @@ class TestGetElementsByRepresentation(test.bootstrap.IFC4):
                 self.file.createIfcShapeRepresentation(
                     Items=[
                         self.file.createIfcMappedItem(
-                            MappingSource=self.file.createIfcRepresentationMap(
-                                MappedRepresentation=representation
-                            )
+                            MappingSource=self.file.createIfcRepresentationMap(MappedRepresentation=representation)
                         )
                     ]
                 )
@@ -458,40 +643,14 @@ class TestGetElementsByRepresentation(test.bootstrap.IFC4):
         assert subject.get_elements_by_representation(self.file, representation) == {element}
 
 
-class TestGetlayers(test.bootstrap.IFC4):
-    def test_getting_the_layer_of_a_product_representation(self):
+class TestGetElementsByLayer(test.bootstrap.IFC4):
+    def test_getting_the_elements_of_a_layer(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         layer = ifcopenshell.api.run("layer.add_layer", self.file)
         representation = self.file.createIfcShapeRepresentation()
         element.Representation = self.file.createIfcProductDefinitionShape(Representations=[representation])
-        ifcopenshell.api.run("layer.assign_layer", self.file, item=representation, layer=layer)
-        assert subject.get_layers(self.file, element) == [layer]
-
-    def test_getting_the_layer_of_a_product_item(self):
-        element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
-        layer = ifcopenshell.api.run("layer.add_layer", self.file)
-        item = self.file.createIfcExtrudedAreaSolid()
-        representation = self.file.createIfcShapeRepresentation(Items=[item])
-        element.Representation = self.file.createIfcProductDefinitionShape(Representations=[representation])
-        ifcopenshell.api.run("layer.assign_layer", self.file, item=item, layer=layer)
-        assert subject.get_layers(self.file, element) == [layer]
-
-    def test_getting_the_layer_of_a_type_product_representation(self):
-        element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWallType")
-        layer = ifcopenshell.api.run("layer.add_layer", self.file)
-        representation = self.file.createIfcShapeRepresentation()
-        element.RepresentationMaps = [self.file.createIfcRepresentationMap(MappedRepresentation=representation)]
-        ifcopenshell.api.run("layer.assign_layer", self.file, item=representation, layer=layer)
-        assert subject.get_layers(self.file, element) == [layer]
-
-    def test_getting_the_layer_of_a_type_product_item(self):
-        element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWallType")
-        layer = ifcopenshell.api.run("layer.add_layer", self.file)
-        item = self.file.createIfcExtrudedAreaSolid()
-        representation = self.file.createIfcShapeRepresentation(Items=[item])
-        element.RepresentationMaps = [self.file.createIfcRepresentationMap(MappedRepresentation=representation)]
-        ifcopenshell.api.run("layer.assign_layer", self.file, item=item, layer=layer)
-        assert subject.get_layers(self.file, element) == [layer]
+        ifcopenshell.api.run("layer.assign_layer", self.file, items=[representation], layer=layer)
+        assert list(subject.get_elements_by_layer(self.file, layer)) == [element]
 
 
 class TestGetlayersIFC2X3(test.bootstrap.IFC2X3):
@@ -501,7 +660,7 @@ class TestGetlayersIFC2X3(test.bootstrap.IFC2X3):
         item = self.file.createIfcExtrudedAreaSolid()
         representation = self.file.createIfcShapeRepresentation(Items=[item])
         element.Representation = self.file.createIfcProductDefinitionShape(Representations=[representation])
-        ifcopenshell.api.run("layer.assign_layer", self.file, item=item, layer=layer)
+        ifcopenshell.api.run("layer.assign_layer", self.file, items=[item], layer=layer)
         assert subject.get_layers(self.file, element) == [layer]
 
     def test_getting_the_layer_of_a_type_product_item(self):
@@ -510,7 +669,25 @@ class TestGetlayersIFC2X3(test.bootstrap.IFC2X3):
         item = self.file.createIfcExtrudedAreaSolid()
         representation = self.file.createIfcShapeRepresentation(Items=[item])
         element.RepresentationMaps = [self.file.createIfcRepresentationMap(MappedRepresentation=representation)]
-        ifcopenshell.api.run("layer.assign_layer", self.file, item=item, layer=layer)
+        ifcopenshell.api.run("layer.assign_layer", self.file, items=[item], layer=layer)
+        assert subject.get_layers(self.file, element) == [layer]
+
+
+class TestGetlayers(test.bootstrap.IFC4, TestGetlayersIFC2X3):
+    def test_getting_the_layer_of_a_product_representation(self):
+        element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
+        layer = ifcopenshell.api.run("layer.add_layer", self.file)
+        representation = self.file.createIfcShapeRepresentation()
+        element.Representation = self.file.createIfcProductDefinitionShape(Representations=[representation])
+        ifcopenshell.api.run("layer.assign_layer", self.file, items=[representation], layer=layer)
+        assert subject.get_layers(self.file, element) == [layer]
+
+    def test_getting_the_layer_of_a_type_product_representation(self):
+        element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWallType")
+        layer = ifcopenshell.api.run("layer.add_layer", self.file)
+        representation = self.file.createIfcShapeRepresentation()
+        element.RepresentationMaps = [self.file.createIfcRepresentationMap(MappedRepresentation=representation)]
+        ifcopenshell.api.run("layer.assign_layer", self.file, items=[representation], layer=layer)
         assert subject.get_layers(self.file, element) == [layer]
 
 
@@ -518,23 +695,23 @@ class TestGetContainerIFC4(test.bootstrap.IFC4):
     def test_getting_the_spatial_container_of_an_element(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         building = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcBuilding")
-        ifcopenshell.api.run("spatial.assign_container", self.file, product=element, relating_structure=building)
+        ifcopenshell.api.run("spatial.assign_container", self.file, products=[element], relating_structure=building)
         assert subject.get_container(element) == building
 
     def test_getting_an_indirect_spatial_container_of_an_element(self):
         subelement = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcElementAssembly")
         building = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcBuilding")
-        ifcopenshell.api.run("spatial.assign_container", self.file, product=element, relating_structure=building)
-        ifcopenshell.api.run("aggregate.assign_object", self.file, product=subelement, relating_object=element)
+        ifcopenshell.api.run("spatial.assign_container", self.file, products=[element], relating_structure=building)
+        ifcopenshell.api.run("aggregate.assign_object", self.file, products=[subelement], relating_object=element)
         assert subject.get_container(subelement) == building
 
     def test_getting_nothing_if_we_enforce_only_getting_direct_spatial_containers(self):
         subelement = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcElementAssembly")
         building = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcBuilding")
-        ifcopenshell.api.run("spatial.assign_container", self.file, product=element, relating_structure=building)
-        ifcopenshell.api.run("aggregate.assign_object", self.file, product=subelement, relating_object=element)
+        ifcopenshell.api.run("spatial.assign_container", self.file, products=[element], relating_structure=building)
+        ifcopenshell.api.run("aggregate.assign_object", self.file, products=[subelement], relating_object=element)
         assert subject.get_container(subelement, should_get_direct=True) is None
 
 
@@ -543,11 +720,31 @@ class TestGetReferencedStructures(test.bootstrap.IFC4):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         assert subject.get_referenced_structures(element) == []
         building = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcBuilding")
-        ifcopenshell.api.run("spatial.reference_structure", self.file, product=element, relating_structure=building)
+        ifcopenshell.api.run("spatial.reference_structure", self.file, products=[element], relating_structure=building)
         assert subject.get_referenced_structures(element) == [building]
         building2 = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcBuilding")
-        ifcopenshell.api.run("spatial.reference_structure", self.file, product=element, relating_structure=building2)
+        ifcopenshell.api.run("spatial.reference_structure", self.file, products=[element], relating_structure=building2)
         assert subject.get_referenced_structures(element) == [building, building2]
+
+
+class TestGetReferencedStructuresIFC2X3(test.bootstrap.IFC2X3, TestGetReferencedStructures):
+    pass
+
+
+class TestGetStructureReferencedElements(test.bootstrap.IFC4):
+    def test_getting_references_of_an_element(self):
+        building = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcBuilding")
+        assert subject.get_structure_referenced_elements(building) == set()
+        element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
+        ifcopenshell.api.run("spatial.reference_structure", self.file, products=[element], relating_structure=building)
+        assert subject.get_structure_referenced_elements(building) == {element}
+        element2 = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
+        ifcopenshell.api.run("spatial.reference_structure", self.file, products=[element2], relating_structure=building)
+        assert subject.get_structure_referenced_elements(building) == {element, element2}
+
+
+class TestGetStructureReferencedElementsIFC2X3(test.bootstrap.IFC2X3, TestGetStructureReferencedElements):
+    pass
 
 
 class TestGetDecompositionIFC4(test.bootstrap.IFC4):
@@ -555,8 +752,8 @@ class TestGetDecompositionIFC4(test.bootstrap.IFC4):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcElementAssembly")
         subelement = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcBeam")
         building = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcBuilding")
-        ifcopenshell.api.run("spatial.assign_container", self.file, product=element, relating_structure=building)
-        ifcopenshell.api.run("aggregate.assign_object", self.file, product=subelement, relating_object=element)
+        ifcopenshell.api.run("spatial.assign_container", self.file, products=[element], relating_structure=building)
+        ifcopenshell.api.run("aggregate.assign_object", self.file, products=[subelement], relating_object=element)
         results = subject.get_decomposition(building)
         assert element in results
         assert subelement in results
@@ -572,12 +769,85 @@ class TestGetDecompositionIFC4(test.bootstrap.IFC4):
         assert subsubelement in results
 
 
+class TestGetGroupsIFC4(test.bootstrap.IFC4):
+    def test_run(self):
+        element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
+        group1 = ifcopenshell.api.run("group.add_group", self.file)
+        group2 = ifcopenshell.api.run("group.add_group", self.file)
+
+        # assign group for multiple elements
+        ifcopenshell.api.run("group.assign_group", self.file, products=[element], group=group1)
+        ifcopenshell.api.run("group.assign_group", self.file, products=[element], group=group2)
+
+        assert set(subject.get_groups(element)) == set([group1, group2])
+
+
+class TestGetGroupsIFC2X3(test.bootstrap.IFC2X3, TestGetGroupsIFC4):
+    pass
+
+
 class TestGetAggregateIFC4(test.bootstrap.IFC4):
     def test_getting_the_containing_aggregate_of_a_subelement(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")
         subelement = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcCovering")
-        ifcopenshell.api.run("aggregate.assign_object", self.file, product=subelement, relating_object=element)
+        ifcopenshell.api.run("aggregate.assign_object", self.file, products=[subelement], relating_object=element)
         assert subject.get_aggregate(subelement) == element
+
+
+class TestGetNestIFC4(test.bootstrap.IFC4):
+    def test_getting_the_nest_parent_of_an_element(self):
+        element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcTask")
+        subelement = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcTask")
+        ifcopenshell.api.run("nest.assign_object", self.file, related_objects=[subelement], relating_object=element)
+        assert subject.get_nest(subelement) == element
+
+
+class TestGetNestIFC2X3(test.bootstrap.IFC2X3, TestGetNestIFC4):
+    pass
+
+
+class TestGetReferencedElements(test.bootstrap.IFC4):
+    # TODO: test other references:
+    # IfcExternallyDefinedHatchStyle
+    # IfcExternallyDefinedSurfaceStyle
+    # IfcExternallyDefinedTextFont
+    def test_get_elements_referenced_by_classification_reference(self):
+        ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcProject")
+        elements = [ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall")]
+        if self.file.schema != "IFC2X3":
+            elements.append(self.file.create_entity("IfcCostValue"))
+        result = ifcopenshell.api.run("classification.add_classification", self.file, classification="Name")
+        reference = ifcopenshell.api.run(
+            "classification.add_reference",
+            self.file,
+            products=elements,
+            identification="X",
+            name="Foobar",
+            classification=result,
+        )
+        assert subject.get_referenced_elements(reference) == set(elements)
+
+    def test_get_elements_referenced_by_library_reference(self):
+        reference = self.file.createIfcLibraryReference()
+        elements = [
+            ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall"),
+            ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall"),
+        ]
+        ifcopenshell.api.run("library.assign_reference", self.file, reference=reference, products=elements)
+        assert subject.get_referenced_elements(reference) == set(elements)
+
+    def test_get_elements_referenced_by_document_reference(self):
+        reference = ifcopenshell.api.run("document.add_reference", self.file, information=None)
+        elements = [
+            ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall"),
+            ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcWall"),
+        ]
+        ifcopenshell.api.run("document.assign_document", self.file, document=reference, products=elements)
+        assert subject.get_referenced_elements(reference) == set(elements)
+
+
+class TestGetReferencedElementsIFC2X3(test.bootstrap.IFC2X3, TestGetReferencedElements):
+    pass
 
 
 class TestReplaceAttributeIFC4(test.bootstrap.IFC4):
@@ -652,6 +922,18 @@ class TestRemoveDeep2IFC4(test.bootstrap.IFC4):
         assert self.file.by_guid("id1")
 
 
+class TestBatchRemoveDeep2IFC4(test.bootstrap.IFC4):
+    def test_run(self):
+        owner = self.file.createIfcOwnerHistory()
+        element = self.file.createIfcWall(GlobalId="id", OwnerHistory=owner)
+        subject.batch_remove_deep2(self.file)
+        subject.remove_deep2(self.file, element)
+        new = subject.unbatch_remove_deep2(self.file)
+        assert self.file.by_id(1)
+        with pytest.raises(RuntimeError):
+            new.by_id(1)
+
+
 class TestCopyIFC4(test.bootstrap.IFC4):
     def test_copying_an_element(self):
         element = self.file.createIfcWall(GlobalId="id", Name="name")
@@ -692,3 +974,26 @@ class TestCopyDeepIFC4(test.bootstrap.IFC4):
         rel.RelatedObjects = [element]
         rel2 = subject.copy_deep(self.file, rel, exclude=["IfcWall"])
         assert rel.RelatedObjects == rel2.RelatedObjects
+
+    def test_copying_an_element_recursively_with_aggregates_with_an_exclude_callback(self):
+        element = self.file.createIfcWall(Name="name")
+        rel = self.file.createIfcRelAggregates()
+        rel.RelatedObjects = [element]
+        rel2 = subject.copy_deep(self.file, rel, exclude_callback=lambda x: x.is_a("IfcWall"))
+        assert rel.RelatedObjects == rel2.RelatedObjects
+
+    def test_copying_and_reusing_element_references(self):
+        points = self.file.createIfcCartesianPointList2D()
+        subelement1 = self.file.createIfcIndexedPolyCurve(points)
+        subelement2 = self.file.createIfcIndexedPolyCurve(points)
+        element = self.file.createIfcGeometricCurveSet([subelement1, subelement2])
+        element2 = subject.copy_deep(self.file, element)
+        assert element2.Elements[0].Points.id() == element2.Elements[1].Points.id()
+
+    def test_copying_primitive_entities(self):
+        element = self.file.createIfcIndexedPolyCurve(
+            Segments=(self.file.createIfcLineIndex((1, 2)), self.file.createIfcLineIndex((3, 4)))
+        )
+        element2 = subject.copy_deep(self.file, element)
+        assert element2.Segments[0][0] == (1, 2)
+        assert element2.Segments[1][0] == (3, 4)

@@ -16,24 +16,16 @@
 # You should have received a copy of the GNU General Public License
 # along with BlenderBIM Add-on.  If not, see <http://www.gnu.org/licenses/>.
 
-import bpy
 import os
+import bpy
+import math
+import bmesh
 import blenderbim.tool as tool
-from mathutils import Vector
+import ifcopenshell.util.element
+from mathutils import Vector, Matrix
 
 
 class Annotator:
-    @staticmethod
-    def get_svg_text_size(size):
-        sizes = {
-            "1.8": "2.97",
-            "2.5": "4.13",
-            "3.5": "5.78",
-            "5.0": "8.25",
-            "7.0": "11.55",
-        }
-        return float(sizes[str(size)])
-
     @staticmethod
     def add_text(related_element=None):
         curve = bpy.data.curves.new(type="FONT", name="Text")
@@ -43,7 +35,7 @@ class Annotator:
         if related_element is None:
             location, _, _, _ = Annotator.get_placeholder_coords(bpy.context)
         else:
-            obj.data.BIMTextProperties.related_element = related_element
+            obj.data.BIMAssignedProductProperties.related_element = related_element
             location = related_element.location
         obj.location = location
         obj.hide_render = True
@@ -55,7 +47,7 @@ class Annotator:
             font.name = "OpenGost Type B TT"
         obj.data.font = font
         obj.data.BIMTextProperties.font_size = "2.5"
-        collection = bpy.context.scene.camera.users_collection[0]
+        collection = bpy.context.scene.camera.BIMObjectProperties.collection
         collection.objects.link(obj)
         Annotator.resize_text(obj)
         return obj
@@ -63,9 +55,10 @@ class Annotator:
     @staticmethod
     def resize_text(text_obj):
         camera = None
-        for obj in text_obj.users_collection[0].objects:
-            if isinstance(obj.data, bpy.types.Camera):
-                camera = obj
+        group = tool.Drawing.get_drawing_group(tool.Ifc.get_entity(text_obj))
+        for element in tool.Drawing.get_drawing_elements(group):
+            if element.is_a("IfcAnnotation") and element.ObjectType == "DRAWING":
+                camera = tool.Ifc.get_object(element)
                 break
         if not camera:
             return
@@ -73,12 +66,7 @@ class Annotator:
         font_size = 1.6 / 1000
         font_size *= float(text_obj.data.BIMTextProperties.font_size)
 
-        if camera.data.BIMCameraProperties.diagram_scale == "CUSTOM":
-            human_scale, fraction = camera.data.BIMCameraProperties.custom_diagram_scale.split("|")
-        else:
-            human_scale, fraction = camera.data.BIMCameraProperties.diagram_scale.split("|")
-        numerator, denominator = fraction.split("/")
-        font_size /= float(numerator) / float(denominator)
+        font_size /= tool.Drawing.get_scale_ratio(tool.Drawing.get_diagram_scale(camera)["Scale"])
 
         text_obj.data.size = font_size
 
@@ -88,82 +76,62 @@ class Annotator:
             co1, co2, _, _ = Annotator.get_placeholder_coords()
         co1 = obj.matrix_world.inverted() @ co1
         co2 = obj.matrix_world.inverted() @ co2
+
         if isinstance(obj.data, bpy.types.Mesh):
             obj.data.vertices.add(2)
             obj.data.vertices[-2].co = co1
             obj.data.vertices[-1].co = co2
             obj.data.edges.add(1)
             obj.data.edges[-1].vertices = (obj.data.vertices[-2].index, obj.data.vertices[-1].index)
+
         if isinstance(obj.data, bpy.types.Curve):
             polyline = obj.data.splines.new("POLY")
             polyline.points.add(1)
             polyline.points[-2].co = list(co1) + [1]
             polyline.points[-1].co = list(co2) + [1]
+
         return obj
 
     @staticmethod
-    def add_plane_to_annotation(obj):
-        co1, co2, co3, co4 = Annotator.get_placeholder_coords()
-        co1 = obj.matrix_world.inverted() @ co1  # bot left
-        co2 = obj.matrix_world.inverted() @ co2  # top left
-        co3 = obj.matrix_world.inverted() @ co3  # bot right
-        co4 = obj.matrix_world.inverted() @ co4  # top right
+    def add_vertex_to_annotation(obj):
+        verts_world_space = Annotator.get_placeholder_coords()
+        vert_local = obj.matrix_world.inverted() @ verts_world_space[0]
+        bm = tool.Blender.get_bmesh_for_mesh(obj.data, clean=True)
+        bm.verts.new(vert_local)
+        tool.Blender.apply_bmesh(obj.data, bm, obj)
+        return obj
 
-        obj.data.vertices.add(4)
-        v1 = obj.data.vertices[-4]
-        v2 = obj.data.vertices[-3]
-        v3 = obj.data.vertices[-2]
-        v4 = obj.data.vertices[-1]
-        v1.co = co4
-        v2.co = co2
-        v3.co = co1
-        v4.co = co3
+    @staticmethod
+    def add_plane_to_annotation(obj, remove_face=False):
+        # default order = bot left, top left, bot right, top right
+        # therefore we redefine the order
+        face_verts = [0, 2, 3, 1]
 
-        obj.data.edges.add(4)
-        e1 = obj.data.edges[-4]
-        e2 = obj.data.edges[-3]
-        e3 = obj.data.edges[-2]
-        e4 = obj.data.edges[-1]
-        e1.vertices = (v1.index, v2.index)
-        e2.vertices = (v2.index, v3.index)
-        e3.vertices = (v3.index, v4.index)
-        e4.vertices = (v4.index, v1.index)
+        verts_world_space = Annotator.get_placeholder_coords()
+        verts_local = [obj.matrix_world.inverted() @ v for v in verts_world_space]
+        bm = tool.Blender.get_bmesh_for_mesh(obj.data, clean=True)
+        new_verts = [bm.verts.new(v) for v in verts_local]
 
-        obj.data.loops.add(4)
-        l1 = obj.data.loops[-4]
-        l2 = obj.data.loops[-3]
-        l3 = obj.data.loops[-2]
-        l4 = obj.data.loops[-1]
-        l1.vertex_index = v1.index
-        l1.edge_index = e1.index
-        l2.vertex_index = v2.index
-        l2.edge_index = e2.index
-        l3.vertex_index = v3.index
-        l3.edge_index = e3.index
-        l4.vertex_index = v4.index
-        l4.edge_index = e4.index
-
-        obj.data.polygons.add(1)
-        p1 = obj.data.polygons[-1]
-        p1.vertices = (v1.index, v2.index, v3.index, v4.index)
-        p1.loop_start = l1.index
-        p1.loop_total = 4
+        face = bm.faces.new([new_verts[i] for i in face_verts])
+        if remove_face:
+            bmesh.ops.delete(bm, geom=[face], context="FACES_ONLY")
+        tool.Blender.apply_bmesh(obj.data, bm, obj)
         return obj
 
     @staticmethod
     def get_annotation_obj(drawing, object_type, data_type):
         camera = tool.Ifc.get_object(drawing)
         co1, _, _, _ = Annotator.get_placeholder_coords(camera)
-        matrix_world = camera.matrix_world.copy()
-        matrix_world[0][3] = co1.x
-        matrix_world[1][3] = co1.y
-        matrix_world[2][3] = co1.z
-        collection = camera.users_collection[0]
+        matrix_world = tool.Drawing.get_camera_matrix(camera)
+        matrix_world.translation = co1
+        collection = camera.BIMObjectProperties.collection
+
         if object_type == "TEXT":
             obj = bpy.data.objects.new(object_type, None)
             obj.matrix_world = matrix_world
             collection.objects.link(obj)
             return obj
+
         elif object_type in ("TEXT_LEADER", "SECTION_LEVEL"):
             data = bpy.data.curves.new(object_type, type="CURVE")
             data.dimensions = "3D"
@@ -172,17 +140,22 @@ class Annotator:
             obj.matrix_world = matrix_world
             collection.objects.link(obj)
             return obj
+
         if object_type != "ANGLE":
             for obj in collection.objects:
                 element = tool.Ifc.get_entity(obj)
-                if element and element.ObjectType == object_type:
+                if element and element.ObjectType == object_type and obj.type == object_type.upper():
                     return obj
+
         if data_type == "mesh":
             data = bpy.data.meshes.new(object_type)
         elif data_type == "curve":
             data = bpy.data.curves.new(object_type, type="CURVE")
             data.dimensions = "3D"
             data.resolution_u = 2
+        elif data_type == "empty":
+            data = None
+
         obj = bpy.data.objects.new(object_type, data)
         obj.matrix_world = matrix_world
         collection.objects.link(obj)
@@ -192,20 +165,32 @@ class Annotator:
     def get_placeholder_coords(camera=None):
         if not camera:
             camera = bpy.context.scene.camera
+
         z_offset = camera.matrix_world.to_quaternion() @ Vector((0, 0, -1))
-        if bpy.context.scene.render.resolution_x > bpy.context.scene.render.resolution_y:
-            y = (
-                camera.data.ortho_scale
-                * (bpy.context.scene.render.resolution_y / bpy.context.scene.render.resolution_x)
-                / 4
-            )
-        else:
-            y = camera.data.ortho_scale / 4
+
+        if (
+            ifcopenshell.util.element.get_pset(tool.Ifc.get_entity(camera), "EPset_Drawing", "TargetView")
+            == "REFLECTED_PLAN_VIEW"
+        ):
+            z_offset *= -1
+
+        y = camera.data.ortho_scale / 4
+
+        res_x = bpy.context.scene.render.resolution_x
+        res_y = bpy.context.scene.render.resolution_y
+        if res_x > res_y:
+            y *= res_y / res_x
+
         y_offset = camera.matrix_world.to_quaternion() @ Vector((0, y, 0))
         x_offset = camera.matrix_world.to_quaternion() @ Vector((y / 2, 0, 0))
+
+        center = camera.matrix_world.inverted() @ bpy.context.scene.cursor.location
+        center.z = 0
+        center = camera.matrix_world @ center
+
         return (
-            camera.location + z_offset,
-            camera.location + z_offset + y_offset,
-            camera.location + z_offset + x_offset,
-            camera.location + z_offset + x_offset + y_offset,
+            center + z_offset,
+            center + z_offset + y_offset,
+            center + z_offset + x_offset,
+            center + z_offset + x_offset + y_offset,
         )

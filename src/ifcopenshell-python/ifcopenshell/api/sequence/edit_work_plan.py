@@ -17,20 +17,41 @@
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
 
 import ifcopenshell.util.date
+from typing import Any
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"work_plan": None, "attributes": {}}
-        for key, value in settings.items():
-            self.settings[key] = value
+def edit_work_plan(
+    file: ifcopenshell.file, work_plan: ifcopenshell.entity_instance, attributes: dict[str, Any]
+) -> None:
+    """Edits the attributes of an IfcWorkPlan
 
-    def execute(self):
-        for name, value in self.settings["attributes"].items():
-            if value:
-                if "Date" in name or "Time" in name:
-                    value = ifcopenshell.util.date.datetime2ifc(value, "IfcDateTime")
-                elif name == "Duration" or name == "TotalFloat":
-                    value = ifcopenshell.util.date.datetime2ifc(value, "IfcDuration")
-            setattr(self.settings["work_plan"], name, value)
+    For more information about the attributes and data types of an
+    IfcWorkPlan, consult the IFC documentation.
+
+    :param work_plan: The IfcWorkPlan entity you want to edit
+    :type work_plan: ifcopenshell.entity_instance
+    :param attributes: a dictionary of attribute names and values.
+    :type attributes: dict
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        # This will hold all our construction schedules
+        work_plan = ifcopenshell.api.run("sequence.add_work_plan", model, name="Construction")
+
+        # Let's give it a description
+        ifcopenshell.api.run("sequence.edit_work_plan", model,
+            work_plan=work_plan, attributes={"Description": "Construction of phase 1"})
+    """
+    settings = {"work_plan": work_plan, "attributes": attributes}
+
+    for name, value in settings["attributes"].items():
+        if value:
+            if "Date" in name or "Time" in name:
+                value = ifcopenshell.util.date.datetime2ifc(value, "IfcDateTime")
+            elif name == "Duration" or name == "TotalFloat":
+                value = ifcopenshell.util.date.datetime2ifc(value, "IfcDuration")
+        setattr(settings["work_plan"], name, value)

@@ -23,13 +23,13 @@ from blenderbim.bim.module.pset_template.data import PsetTemplatesData
 
 
 class BIM_PT_pset_template(Panel):
-    bl_label = "IFC Property Set Templates"
+    bl_label = "Property Set Templates"
     bl_idname = "BIM_PT_pset_template"
     bl_options = {"DEFAULT_CLOSED"}
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "scene"
-    bl_parent_id = "BIM_PT_project_setup"
+    bl_parent_id = "BIM_PT_tab_project_setup"
 
     def draw(self, context):
         if not PsetTemplatesData.is_loaded:
@@ -38,9 +38,9 @@ class BIM_PT_pset_template(Panel):
         self.props = context.scene.BIMPsetTemplateProperties
 
         row = self.layout.row(align=True)
-        prop_with_search(row, self.props, "pset_template_files", text="")
-        row.operator("bim.save_pset_template_file", text="", icon="EXPORT")
-        row.operator("bim.add_pset_file", icon="ADD", text="")
+        prop_with_search(row, self.props, "pset_template_files", text="", icon="FILE")
+        row.operator("bim.add_pset_template_file", icon="ADD", text="")
+        row.operator("bim.remove_pset_template_file", icon="X", text="")
 
         row = self.layout.row(align=True)
 

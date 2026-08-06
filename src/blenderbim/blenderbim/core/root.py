@@ -16,11 +16,25 @@
 # You should have received a copy of the GNU General Public License
 # along with BlenderBIM Add-on.  If not, see <http://www.gnu.org/licenses/>.
 
+from __future__ import annotations
+from typing import TYPE_CHECKING, Optional
 
-def copy_class(ifc, collector, geometry, root, obj=None):
+if TYPE_CHECKING:
+    import bpy
+    import ifcopenshell
+    import blenderbim.tool as tool
+
+
+def copy_class(
+    ifc: tool.Ifc, collector: tool.Collector, geometry: tool.Geometry, root: tool.Root, obj: bpy.types.Object
+) -> ifcopenshell.entity_instance:
     element = ifc.get_entity(obj)
     if not element:
         return
+    if root.is_element_a(element, "IfcRelSpaceBoundary"):
+        new = ifc.run("boundary.copy_boundary", boundary=element)
+        ifc.link(new, obj)
+        return new
     representation = root.get_object_representation(obj)
     new = ifc.run("root.copy_class", product=element)
     ifc.link(new, obj)
@@ -32,26 +46,32 @@ def copy_class(ifc, collector, geometry, root, obj=None):
         root.copy_representation(element, new)
         new_representation = root.get_element_representation(new, root.get_representation_context(representation))
         data = geometry.duplicate_object_data(obj)
-        geometry.change_object_data(obj, data, is_global=True)
-        geometry.rename_object(data, geometry.get_representation_name(new_representation))
-        geometry.link(new_representation, data)
+        if data:
+            geometry.change_object_data(obj, data, is_global=True)
+            geometry.rename_object(data, geometry.get_representation_name(new_representation))
+            geometry.link(new_representation, data)
+        root.assign_body_styles(new, obj)
     collector.assign(obj)
-    if root.is_opening_element(new):
+    if root.is_element_a(new, "IfcOpeningElement"):
         root.add_tracked_opening(obj)
     return new
 
 
 def assign_class(
-    ifc,
-    collector,
-    root,
-    obj=None,
-    ifc_class=None,
-    predefined_type=None,
-    should_add_representation=True,
-    context=None,
-    ifc_representation_class=None,
-):
+    ifc: tool.Ifc,
+    collector: tool.Collector,
+    root: tool.Root,
+    obj: bpy.types.Object,
+    ifc_class: str,
+    context: Optional[ifcopenshell.entity_instance] = None,
+    predefined_type: Optional[str] = None,
+    should_add_representation: bool = True,
+    ifc_representation_class: Optional[str] = None,
+) -> Optional[ifcopenshell.entity_instance]:
+    """
+    Args:
+        context: is not optional if `should_add_representation` is True
+    """
     if ifc.get_entity(obj):
         return
 
@@ -61,12 +81,15 @@ def assign_class(
     ifc.link(element, obj)
 
     if should_add_representation:
+        assert context, "Context is required for adding a representation"
         root.run_geometry_add_representation(
             obj=obj, context=context, ifc_representation_class=ifc_representation_class, profile_set_usage=None
         )
 
-    root.set_element_specific_display_settings(obj, element)
-
-    collector.sync(obj)
+    if default_container := root.get_default_container():
+        if root.is_spatial_element(element):
+            ifc.run("aggregate.assign_object", products=[element], relating_object=default_container)
+        elif root.is_containable(element):
+            ifc.run("spatial.assign_container", products=[element], relating_structure=default_container)
     collector.assign(obj)
     return element

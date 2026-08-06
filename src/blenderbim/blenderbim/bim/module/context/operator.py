@@ -22,7 +22,6 @@ import blenderbim.core.context as core
 import blenderbim.bim.module.context.data
 import blenderbim.bim.handler
 from blenderbim.bim.ifc import IfcStore
-from ifcopenshell.api.context.data import Data
 
 
 class Operator:
@@ -54,6 +53,10 @@ class AddContext(bpy.types.Operator, Operator):
 class RemoveContext(bpy.types.Operator, Operator):
     bl_idname = "bim.remove_context"
     bl_label = "Remove Context"
+    bl_description = (
+        "Remove representation context. Any representation geometry that is assigned to the context is also removed. "
+        "If a context is removed, then any subcontexts are also removed"
+    )
     bl_options = {"REGISTER", "UNDO"}
     context: bpy.props.IntProperty()
 

@@ -16,16 +16,48 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
 
+import ifcopenshell
+import ifcopenshell.util.element
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"element": None}
-        for key, value in settings.items():
-            self.settings[key] = value
 
-    def execute(self):
-        for rel in self.file.by_type("IfcRelFillsElement"):
-            if rel.RelatedBuildingElement == self.settings["element"]:
-                self.file.remove(rel)
-                break
+def remove_filling(file: ifcopenshell.file, element: ifcopenshell.entity_instance) -> None:
+    """Remove a filling relationship
+
+    If an element is filling an opening, this removes the relationship such
+    that the opening and element both still exist, but the element no longer
+    fills the opening.
+
+    :param element: The element filling an opening.
+    :type element: ifcopenshell.entity_instance
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        # Create a wall
+        wall = ifcopenshell.api.run("root.create_entity", model, ifc_class="IfcWall")
+
+        # Create an opening, such as for a service penetration with fire and
+        # acoustic requirements.
+        opening = ifcopenshell.api.run("root.create_entity", model, ifc_class="IfcOpeningElement")
+
+        # Create a door
+        door = ifcopenshell.api.run("root.create_entity", model, ifc_class="IfcDoor")
+
+        # The door will now fill the opening.
+        ifcopenshell.api.run("void.add_filling", model, opening=opening, element=door)
+
+        # Not anymore!
+        ifcopenshell.api.run("void.remove_filling", model, element=door)
+    """
+    settings = {"element": element}
+
+    for rel in file.by_type("IfcRelFillsElement"):
+        if rel.RelatedBuildingElement == settings["element"]:
+            history = rel.OwnerHistory
+            file.remove(rel)
+            if history:
+                ifcopenshell.util.element.remove_deep2(file, history)
+            break

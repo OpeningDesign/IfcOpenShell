@@ -15,16 +15,40 @@
 #
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
+import ifcopenshell
 
-import ifcopenshell.api
 
+def unassign_recurrence_pattern(file: ifcopenshell.file, recurrence_pattern: ifcopenshell.entity_instance) -> None:
+    """Unassigns a recurrence pattern
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"recurrence_pattern": None}
-        for key, value in settings.items():
-            self.settings[key] = value
+    Note that a recurring task time must have a recurrence pattern, so if
+    you remove it, be sure to clean up after your
 
-    def execute(self):
-        self.file.remove(self.settings["recurrence_pattern"])
+    :param recurrence_pattern: The IfcRecurrencePattern to remove.
+    :type recurrence_pattern: ifcopenshell.entity_instance
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        # Let's create a new calendar.
+        calendar = ifcopenshell.api.run("sequence.add_work_calendar", model)
+
+        # Let's start defining the times that we work during the week.
+        work_time = ifcopenshell.api.run("sequence.add_work_time", model,
+            work_calendar=calendar, time_type="WorkingTimes")
+
+        # We create a weekly recurrence
+        pattern = ifcopenshell.api.run("sequence.assign_recurrence_pattern", model,
+            parent=work_time, recurrence_type="WEEKLY")
+
+        # Change our mind, let's just maintain it whenever we feel like it.
+        ifcopenshell.api.run("sequence.unassign_recurrence_pattern", recurrence_pattern=pattern)
+    """
+    settings = {"recurrence_pattern": recurrence_pattern}
+
+    for time_period in settings["recurrence_pattern"].TimePeriods or []:
+        file.remove(time_period)
+    file.remove(settings["recurrence_pattern"])

@@ -18,6 +18,8 @@
 
 import bpy
 import ifcopenshell
+import ifcopenshell.api
+import ifcopenshell.util.element
 import blenderbim.core.tool
 import blenderbim.tool as tool
 from blenderbim.tool.collector import Collector as subject
@@ -39,7 +41,7 @@ class TestAssign(NewFile):
         ifcopenshell.api.run(
             "spatial.assign_container",
             tool.Ifc.get(),
-            product=wall_element,
+            products=[wall_element],
             relating_structure=tool.Ifc.get().by_type("IfcSite")[0],
         )
         subject.assign(wall_obj)
@@ -66,11 +68,30 @@ class TestAssign(NewFile):
             "aggregate.assign_object",
             tool.Ifc.get(),
             relating_object=tool.Ifc.get().by_type("IfcSite")[0],
-            product=space_element,
+            products=[space_element],
         )
         subject.assign(space_obj)
         assert len(space_obj.users_collection) == 1
         assert space_obj.users_collection[0].name == space_obj.name
+
+    def test_in_decomposition_mode_multiple_assigns_do_not_create_duplicate_spatial_structure_collections(self):
+        bpy.ops.bim.create_project()
+        space_obj = bpy.data.objects.new("IfcSpace/Name", None)
+        space_element = tool.Ifc.get().createIfcSpace()
+        tool.Ifc.link(space_element, space_obj)
+        bpy.context.scene.collection.objects.link(space_obj)
+        ifcopenshell.api.run(
+            "aggregate.assign_object",
+            tool.Ifc.get(),
+            relating_object=tool.Ifc.get().by_type("IfcSite")[0],
+            products=[space_element],
+        )
+        subject.assign(space_obj)
+        subject.assign(space_obj)
+        assert bpy.data.collections.get("IfcSpace/Name")
+        assert bpy.data.collections.get("IfcSite/My Site")
+        assert not bpy.data.collections.get("IfcSpace/Name.001")
+        assert not bpy.data.collections.get("IfcSite/My Site.001")
 
     def test_in_decomposition_mode_spatial_zone_elements_are_not_placed_in_a_collection_of_the_same_name(self):
         bpy.ops.bim.create_project()
@@ -82,7 +103,7 @@ class TestAssign(NewFile):
             "aggregate.assign_object",
             tool.Ifc.get(),
             relating_object=tool.Ifc.get().by_type("IfcSite")[0],
-            product=space_element,
+            products=[space_element],
         )
         subject.assign(space_obj)
         assert len(space_obj.users_collection) == 1
@@ -100,7 +121,7 @@ class TestAssign(NewFile):
             "aggregate.assign_object",
             tool.Ifc.get(),
             relating_object=element,
-            product=subelement,
+            products=[subelement],
         )
         subject.assign(element_obj)
         assert len(element_obj.users_collection) == 1
@@ -116,6 +137,17 @@ class TestAssign(NewFile):
         assert len(element_obj.users_collection) == 1
         assert element_obj.users_collection[0].name == element_obj.name
 
+    def test_in_decomposition_mode_multiple_assigns_do_not_create_duplicate_collections(self):
+        tool.Ifc.set(ifcopenshell.file())
+        element_obj = bpy.data.objects.new("IfcProject/Name", None)
+        element = tool.Ifc.get().createIfcProject()
+        tool.Ifc.link(element, element_obj)
+        bpy.context.scene.collection.objects.link(element_obj)
+        subject.assign(element_obj)
+        subject.assign(element_obj)
+        assert bpy.data.collections.get("IfcProject/Name")
+        assert not bpy.data.collections.get("IfcProject/Name.001")
+
     def test_in_decomposition_mode_existing_collections_are_reassigned_to_the_correct_place_in_the_hierarchy(self):
         bpy.ops.bim.create_project()
         space_obj = bpy.data.objects.new("IfcSpace/Name", None)
@@ -123,12 +155,13 @@ class TestAssign(NewFile):
         tool.Ifc.link(space_element, space_obj)
         space_collection = bpy.data.collections.new("IfcSpace/Name")
         bpy.context.scene.collection.children.link(space_collection)
+        space_obj.BIMObjectProperties.collection = space_collection
         space_collection.objects.link(space_obj)
         ifcopenshell.api.run(
             "aggregate.assign_object",
             tool.Ifc.get(),
             relating_object=tool.Ifc.get().by_type("IfcSite")[0],
-            product=space_element,
+            products=[space_element],
         )
         subject.assign(space_obj)
         assert bpy.context.scene.collection.children.find(space_collection.name) == -1
@@ -147,7 +180,7 @@ class TestAssign(NewFile):
             "aggregate.assign_object",
             tool.Ifc.get(),
             relating_object=element,
-            product=subelement,
+            products=[subelement],
         )
         subject.assign(element_obj)
         subject.assign(subelement_obj)
@@ -163,14 +196,14 @@ class TestAssign(NewFile):
         ifcopenshell.api.run(
             "spatial.assign_container",
             tool.Ifc.get(),
-            product=element,
+            products=[element],
             relating_structure=tool.Ifc.get().by_type("IfcSite")[0],
         )
         ifcopenshell.api.run(
             "aggregate.assign_object",
             tool.Ifc.get(),
             relating_object=element,
-            product=subelement,
+            products=[subelement],
         )
         subject.assign(subelement_obj)
         assert subelement_obj.users_collection[0].name == "IfcSite/My Site"
@@ -203,7 +236,7 @@ class TestAssign(NewFile):
         ifcopenshell.api.run(
             "spatial.assign_container",
             tool.Ifc.get(),
-            product=element,
+            products=[element],
             relating_structure=tool.Ifc.get().by_type("IfcSite")[0],
         )
         bpy.context.scene.collection.objects.link(element_obj)
@@ -222,7 +255,7 @@ class TestAssign(NewFile):
         ifcopenshell.api.run(
             "spatial.assign_container",
             tool.Ifc.get(),
-            product=element,
+            products=[element],
             relating_structure=tool.Ifc.get().by_type("IfcSite")[0],
         )
         bpy.context.scene.collection.objects.link(element_obj)
@@ -233,29 +266,32 @@ class TestAssign(NewFile):
 
     def test_in_decomposition_mode_drawings_are_placed_in_a_group_in_a_views_collection(self):
         bpy.ops.bim.create_project()
-        element_obj = bpy.data.objects.new("IfcAnnotation/Name", None)
+        element_obj = bpy.data.objects.new("IfcAnnotation/DRAWING", None)
         element = tool.Ifc.get().createIfcAnnotation(ObjectType="DRAWING")
         tool.Ifc.link(element, element_obj)
+
         group = ifcopenshell.api.run("group.add_group", tool.Ifc.get())
         group.ObjectType = "DRAWING"
         ifcopenshell.api.run("group.assign_group", tool.Ifc.get(), products=[element], group=group)
+
         subject.assign(element_obj)
-        assert element_obj.users_collection[0].name == "IfcGroup/Unnamed"
-        assert bpy.data.collections.get("Views").children.get("IfcGroup/Unnamed")
+        assert element_obj.users_collection[0].name == "IfcAnnotation/DRAWING"
+        assert bpy.data.collections.get("Views").children.get("IfcAnnotation/DRAWING")
         assert bpy.data.collections.get("IfcProject/My Project").children.get("Views")
 
     def test_in_decomposition_mode_annotations_are_placed_in_a_group_in_a_views_collection(self):
-        bpy.ops.bim.create_project()
+        self.test_in_decomposition_mode_drawings_are_placed_in_a_group_in_a_views_collection()
+        ifc_file = tool.Ifc.get()
+
         element_obj = bpy.data.objects.new("IfcAnnotation/Name", None)
-        element = tool.Ifc.get().createIfcAnnotation()
+        element = ifc_file.createIfcAnnotation()
         tool.Ifc.link(element, element_obj)
-        group = ifcopenshell.api.run("group.add_group", tool.Ifc.get())
-        group.ObjectType = "DRAWING"
-        ifcopenshell.api.run("group.assign_group", tool.Ifc.get(), products=[element], group=group)
+
+        group = ifc_file.by_type("IfcGroup")[0]
+        ifcopenshell.api.run("group.assign_group", ifc_file, products=[element], group=group)
+
         subject.assign(element_obj)
-        assert element_obj.users_collection[0].name == "IfcGroup/Unnamed"
-        assert bpy.data.collections.get("Views").children.get("IfcGroup/Unnamed")
-        assert bpy.data.collections.get("IfcProject/My Project").children.get("Views")
+        assert element_obj.users_collection[0].name == "IfcAnnotation/DRAWING"
 
     def test_in_decomposition_mode_structural_members_are_placed_in_a_members_collection(self):
         bpy.ops.bim.create_project()
@@ -300,6 +336,8 @@ class TestSync(NewFile):
         bpy.ops.bim.create_project()
         obj = bpy.data.objects.new("IfcBuildingStorey/Name", None)
         col = bpy.data.collections.new("IfcBuildingStorey/Name")
+        obj.BIMObjectProperties.collection = col
+        col.BIMCollectionProperties.obj = obj
         element = tool.Ifc.get().createIfcBuildingStorey(Name="Name")
         tool.Ifc.link(element, obj)
         bpy.data.collections.get("IfcBuilding/My Building").children.link(col)

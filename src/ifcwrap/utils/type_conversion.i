@@ -35,7 +35,11 @@
 			PyObject* element = PySequence_GetItem(aggregate, i);
 			// This is equivalent to the PyFloat_CheckExact macro. This means
 			// that direct instances of int, float, str, etc. need to be used.
-			if (element->ob_type != type_obj) return false;
+			bool b = element->ob_type == type_obj;
+			Py_DECREF(element);
+			if (!b) {
+				return false;
+			}
 		}
 		return true;		
 	}
@@ -44,7 +48,9 @@
 		if (!PySequence_Check(aggregate)) return false;
 		for(Py_ssize_t i = 0; i < PySequence_Size(aggregate); ++i) {
 			PyObject* element = PySequence_GetItem(aggregate, i);
-			if (!check_aggregate_of_type(element, type_obj)) {
+			bool b = check_aggregate_of_type(element, type_obj);
+			Py_DECREF(element);
+			if (!b) {
 				return false;
 			}
 		}
@@ -66,9 +72,16 @@
 
 	template <>
 	std::string cast_pyobject(PyObject* element) {
+	#if SWIG_VERSION >= 0x040200
+	    PyObject *pbytes = NULL;
+	    const char* str_data = SWIG_PyUnicode_AsUTF8AndSize(element, NULL, &pbytes);
+		std::string str = str_data;
+		Py_XDECREF(pbytes);
+	#else
 		char* str_data = SWIG_Python_str_AsChar(element);
 		std::string str = str_data;
 		SWIG_Python_str_DelForPy3(str_data);
+	#endif
 		return str;
 	}
 
@@ -99,6 +112,7 @@
 			PyObject* element = PySequence_GetItem(aggregate, i);
 			std::vector<T> t = python_sequence_as_vector<T>(element);
 			result_vector.push_back(t);
+			Py_DECREF(element);
 		}
 		return result_vector;
 	}

@@ -17,10 +17,6 @@
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
 
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import os
 import sys
 import operator
@@ -30,6 +26,14 @@ from ..file import file
 from ..entity_instance import entity_instance
 
 from . import has_occ
+
+from typing import TypeVar, Union, Optional, Generator
+
+T = TypeVar("T")
+ShapeElementType = Union[
+    ifcopenshell_wrapper.BRepElement, ifcopenshell_wrapper.TriangulationElement, ifcopenshell_wrapper.SerializedElement
+]
+ShapeType = Union[ifcopenshell_wrapper.BRep, ifcopenshell_wrapper.Triangulation, ifcopenshell_wrapper.Serialization]
 
 
 def wrap_shape_creation(settings, shape):
@@ -75,7 +79,14 @@ class settings(ifcopenshell_wrapper.SerializerSettings):
 
 # Make sure people are able to use python's platform agnostic paths
 class iterator(ifcopenshell_wrapper.Iterator):
-    def __init__(self, settings, file_or_filename, num_threads=1, include=None, exclude=None):
+    def __init__(
+        self,
+        settings: settings,
+        file_or_filename: Union[file, str],
+        num_threads: int = 1,
+        include: Optional[list[entity_instance]] = None,
+        exclude: Optional[list[entity_instance]] = None,
+    ):
         self.settings = settings
         if isinstance(file_or_filename, file):
             file_or_filename = file_or_filename.wrapped_data
@@ -115,7 +126,7 @@ class iterator(ifcopenshell_wrapper.Iterator):
         def get(self):
             return wrap_shape_creation(self.settings, ifcopenshell_wrapper.Iterator.get(self))
 
-    def __iter__(self):
+    def __iter__(self) -> Generator[ShapeElementType, None, None]:
         if self.initialize():
             while True:
                 yield self.get()
@@ -124,7 +135,7 @@ class iterator(ifcopenshell_wrapper.Iterator):
 
 
 class tree(ifcopenshell_wrapper.tree):
-    def __init__(self, file=None, settings=None):
+    def __init__(self, file: Optional[file] = None, settings: Optional[settings] = None):
         args = [self]
         if file is not None:
             args.append(file.wrapped_data)
@@ -132,13 +143,19 @@ class tree(ifcopenshell_wrapper.tree):
                 args.append(settings)
         ifcopenshell_wrapper.tree.__init__(*args)
 
-    def add_file(self, file, settings):
+    def add_file(self, file: file, settings: settings) -> None:
         ifcopenshell_wrapper.tree.add_file(self, file.wrapped_data, settings)
 
-    def add_iterator(self, iterator):
+    def add_iterator(self, iterator: iterator) -> None:
         ifcopenshell_wrapper.tree.add_file(self, iterator)
 
-    def select(self, value, **kwargs):
+    def select(
+        self,
+        value: Union[
+            entity_instance, ifcopenshell_wrapper.BRepElement, tuple[float, float, float], "TopoDS.TopoDS_Shape"
+        ],
+        **kwargs,
+    ) -> list[entity_instance]:
         def unwrap(value):
             if isinstance(value, entity_instance):
                 return value.wrapped_data
@@ -162,7 +179,7 @@ class tree(ifcopenshell_wrapper.tree):
                     args.append(kwargs["extend"])
         return [entity_instance(e) for e in ifcopenshell_wrapper.tree.select(*args)]
 
-    def select_box(self, value, **kwargs):
+    def select_box(self, value, **kwargs) -> list[entity_instance]:
         def unwrap(value):
             if isinstance(value, entity_instance):
                 return value.wrapped_data
@@ -177,8 +194,22 @@ class tree(ifcopenshell_wrapper.tree):
             args.append(kwargs.get("extend", -1.0e-5))
         return [entity_instance(e) for e in ifcopenshell_wrapper.tree.select_box(*args)]
 
+    def clash_intersection_many(self, set_a, set_b, tolerance=0.002, check_all=True):
+        args = [self, [e.wrapped_data for e in set_a], [e.wrapped_data for e in set_b], tolerance, check_all]
+        return ifcopenshell_wrapper.tree.clash_intersection_many(*args)
 
-def create_shape(settings, inst, repr=None):
+    def clash_collision_many(self, set_a, set_b, allow_touching=False):
+        args = [self, [e.wrapped_data for e in set_a], [e.wrapped_data for e in set_b], allow_touching]
+        return ifcopenshell_wrapper.tree.clash_collision_many(*args)
+
+    def clash_clearance_many(self, set_a, set_b, clearance=0.05, check_all=False):
+        args = [self, [e.wrapped_data for e in set_a], [e.wrapped_data for e in set_b], clearance, check_all]
+        return ifcopenshell_wrapper.tree.clash_clearance_many(*args)
+
+
+def create_shape(
+    settings: settings, inst: entity_instance, repr: Optional[entity_instance] = None
+) -> ifcopenshell_wrapper.TriangulationElement:
     """
     Return a geometric representation from STEP-based IFCREPRESENTATIONSHAPE
     or
@@ -253,7 +284,7 @@ serialise = make_shape_function(ifcopenshell_wrapper.serialise)
 tesselate = make_shape_function(ifcopenshell_wrapper.tesselate)
 
 
-def wrap_buffer_creation(fn):
+def wrap_buffer_creation(fn: T):
     """
     Python does not have automatic casts. The C++ serializers accept a stream_or_filename
     which in C++ can be automatically constructed from a filename string. In Python we
@@ -266,28 +297,25 @@ def wrap_buffer_creation(fn):
         else:
             return v
 
-    def inner(*args):
+    def inner(*args) -> T:
         return fn(*map(transform_string, args))
 
     return inner
 
 
-# Hdf- Xml- and glTF- serializers don't support writing to a buffer, only to filename
-# so no wrap_buffer_creation() for these serializers
-serializer_dict = {}
-serializer_dict["obj"] = wrap_buffer_creation(ifcopenshell_wrapper.WaveFrontOBJSerializer)
-serializer_dict["svg"] = wrap_buffer_creation(ifcopenshell_wrapper.SvgSerializer)
-serializer_dict["xml"] = ifcopenshell_wrapper.XmlSerializer
-serializer_dict["buffer"] = ifcopenshell_wrapper.buffer
-
-# gltf and hdf5 availability depend on IfcOpenShell configuration settings
-try:
-    serializer_dict["gltf"] = ifcopenshell_wrapper.GltfSerializer
-except: pass
-
-try:
-    serializer_dict["hdf5"] = ifcopenshell_wrapper.HdfSerializer
-except:
-    pass
-
-serializers = type("serializers", (), serializer_dict)
+class serializers:
+    obj = wrap_buffer_creation(ifcopenshell_wrapper.WaveFrontOBJSerializer)
+    svg = wrap_buffer_creation(ifcopenshell_wrapper.SvgSerializer)
+    # Hdf- Xml- and glTF- serializers don't support writing to a buffer, only to filename
+    # so no wrap_buffer_creation() for these serializers
+    xml = ifcopenshell_wrapper.XmlSerializer
+    buffer = ifcopenshell_wrapper.buffer
+    # gltf and hdf5 availability depend on IfcOpenShell configuration settings
+    try:
+        gltf = ifcopenshell_wrapper.GltfSerializer
+    except:
+        pass
+    try:
+        hdf5 = ifcopenshell_wrapper.HdfSerializer
+    except:
+        pass

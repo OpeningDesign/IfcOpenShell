@@ -30,16 +30,16 @@ bool IfcGeom::Kernel::convert(const IfcSchema::IfcGeometricSet* l, IfcRepresenta
 	const bool include_curves = getValue(GV_DIMENSIONALITY) != +1;
 	const bool include_solids_and_surfaces = getValue(GV_DIMENSIONALITY) != -1;
 
-	aggregate_of_instance::ptr elements = l->Elements();
-	if ( !elements->size() ) return false;
+	auto elements = l->Elements();
+	if (!elements->size()) return false;
 	bool part_succes = false;
 	auto parent_style = get_style(l);
-	for (aggregate_of_instance::it it = elements->begin(); it != elements->end(); ++it) {
+	for (auto it = elements->begin(); it != elements->end(); ++it) {
 		auto element = *it;
 		TopoDS_Shape s;
 		if (shape_type(element) == ST_SHAPELIST) {
 			IfcRepresentationShapeItems items;
-			if (!(convert_shapes(element, items) && flatten_shape_list(items, s, false))) {
+			if (!(convert_shapes(element, items) && util::flatten_shape_list(items, s, false, getValue(GV_PRECISION)))) {
 				continue;
 			}
 		} else if (shape_type(element) == ST_SHAPE && include_solids_and_surfaces) {
@@ -58,14 +58,14 @@ bool IfcGeom::Kernel::convert(const IfcSchema::IfcGeometricSet* l, IfcRepresenta
 
 		part_succes = true;
 		decltype(parent_style) style = 0;
-		if (element->declaration().is(IfcSchema::IfcPoint::Class())) {
-			style = get_style((IfcSchema::IfcPoint*) element);
+		if (element->as<IfcSchema::IfcPoint>()) {
+			style = get_style(element->as<IfcSchema::IfcPoint>());
 		}
-		else if (element->declaration().is(IfcSchema::IfcCurve::Class())) {
-			style = get_style((IfcSchema::IfcCurve*) element);
+		else if (element->as<IfcSchema::IfcPoint>()) {
+			style = get_style(element->as<IfcSchema::IfcPoint>());
 		}
-		else if (element->declaration().is(IfcSchema::IfcSurface::Class())) {
-			style = get_style((IfcSchema::IfcSurface*) element);
+		else if (element->as<IfcSchema::IfcPoint>()) {
+			style = get_style(element->as<IfcSchema::IfcPoint>());
 		}
 		shapes.push_back(IfcRepresentationShapeItem(l->data().id(), s, style ? style : parent_style));
 	}

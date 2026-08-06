@@ -16,16 +16,16 @@
 # You should have received a copy of the GNU General Public License
 # along with BlenderBIM Add-on.  If not, see <http://www.gnu.org/licenses/>.
 
-import re
 import bpy
+import json
 import ifcopenshell
+import ifcopenshell.api
+import ifcopenshell.guid
 import ifcopenshell.util.element
-from ifcopenshell.api.group.data import Data
-from ifcopenshell.util.selector import Selector
+import ifcopenshell.util.selector
 import blenderbim.tool as tool
 from blenderbim.bim.ifc import IfcStore
-from blenderbim.bim.helper import close_operator_panel
-from blenderbim.bim.module.group import ui
+import blenderbim.core.search as core
 from itertools import cycle
 from bpy.types import PropertyGroup, Operator
 from bpy.props import (
@@ -56,17 +56,340 @@ colour_list = [
 ]
 
 
-def does_keyword_exist(pattern, string, context):
-    string = str(string)
-    props = context.scene.BIMSearchProperties
-    if props.should_use_regex and props.should_ignorecase and re.search(pattern, string, flags=re.IGNORECASE):
-        return True
-    elif props.should_use_regex and re.search(pattern, string):
-        return True
-    elif props.should_ignorecase and string.lower() == pattern.lower():
-        return True
-    elif string == pattern:
-        return True
+class AddFilterGroup(Operator):
+    bl_idname = "bim.add_filter_group"
+    bl_label = "Add Filter Group"
+    module: StringProperty()
+
+    def execute(self, context):
+        filter_groups = tool.Search.get_filter_groups(self.module)
+        filter_groups.add()
+        return {"FINISHED"}
+
+
+class RemoveFilterGroup(Operator):
+    bl_idname = "bim.remove_filter_group"
+    bl_label = "Remove Filter Group"
+    index: IntProperty()
+    module: StringProperty()
+
+    def execute(self, context):
+        filter_groups = tool.Search.get_filter_groups(self.module)
+        filter_groups.remove(self.index)
+        return {"FINISHED"}
+
+
+class RemoveFilter(Operator):
+    bl_idname = "bim.remove_filter"
+    bl_label = "Remove Filter Group"
+    group_index: IntProperty()
+    index: IntProperty()
+    module: StringProperty()
+
+    def execute(self, context):
+        filter_groups = tool.Search.get_filter_groups(self.module)
+        filter_groups[self.group_index].filters.remove(self.index)
+        return {"FINISHED"}
+
+
+class AddFilter(Operator):
+    bl_idname = "bim.add_filter"
+    bl_label = "Add Filter"
+    index: IntProperty()
+    type: StringProperty()
+    module: StringProperty()
+
+    def execute(self, context):
+        filter_groups = tool.Search.get_filter_groups(self.module)
+        new = filter_groups[self.index].filters.add()
+        new.type = self.type
+        return {"FINISHED"}
+
+
+class SelectFilterElements(bpy.types.Operator):
+    bl_idname = "bim.select_filter_elements"
+    bl_label = "Select Filter Elements"
+    bl_options = {"REGISTER", "UNDO"}
+    group_index: IntProperty()
+    index: IntProperty()
+    module: StringProperty()
+
+    def execute(self, context):
+        filter_groups = tool.Search.get_filter_groups(self.module)
+        global_ids = []
+        for obj in context.selected_objects:
+            if element := tool.Ifc.get_entity(obj):
+                if global_id := getattr(element, "GlobalId", None):
+                    global_ids.append(global_id)
+        if len(global_ids) > 50:
+            # Too much to store in a string property
+            name = f"globalid-filter-{ifcopenshell.guid.new()}"
+            text_data = bpy.data.texts.new(name)
+            text_data.from_string(",".join(global_ids))
+            filter_groups[self.group_index].filters[self.index].value = f"bpy.data.texts['{name}']"
+            self.report({"INFO"}, f'List of Global Ids was saved to the text file "{name}" in the current .blend file')
+        else:
+            filter_groups[self.group_index].filters[self.index].value = ",".join(global_ids)
+        return {"FINISHED"}
+
+
+class EditFilterQuery(Operator, tool.Ifc.Operator):
+    bl_idname = "bim.edit_filter_query"
+    bl_label = "Edit Filter Query"
+    bl_description = "Edit the underlying filter query for advanced users"
+    bl_options = {"REGISTER", "UNDO"}
+    query: StringProperty(name="Query")
+    module: StringProperty()
+
+    def _execute(self, context):
+        if self.query == self.old_query:
+            return
+
+        filter_groups = tool.Search.get_filter_groups(self.module)
+        try:
+            tool.Search.import_filter_query(self.query, filter_groups)
+        except:
+            return
+
+    def draw(self, context):
+        row = self.layout.row()
+        row.prop(self, "query", text="")
+
+    def invoke(self, context, event):
+        filter_groups = tool.Search.get_filter_groups(self.module)
+
+        self.query = tool.Search.export_filter_query(filter_groups)
+        self.old_query = self.query
+
+        return context.window_manager.invoke_props_dialog(self)
+
+
+class Search(Operator):
+    bl_idname = "bim.search"
+    bl_label = "Search"
+
+    def execute(self, context):
+        props = context.scene.BIMSearchProperties
+        results = ifcopenshell.util.selector.filter_elements(
+            tool.Ifc.get(), tool.Search.export_filter_query(props.filter_groups)
+        )
+
+        total_selected = 0
+        for element in results:
+            if obj := tool.Ifc.get_object(element):
+                obj.select_set(True)
+        self.report({"INFO"}, f"{len(results)} Results")
+        return {"FINISHED"}
+
+
+class SaveSearch(Operator, tool.Ifc.Operator):
+    bl_idname = "bim.save_search"
+    bl_label = "Save Search"
+    bl_description = "Save search filter to an IFC group"
+    bl_options = {"REGISTER", "UNDO"}
+    name: StringProperty(name="Name")
+    module: StringProperty()
+
+    def _execute(self, context):
+        if not self.name:
+            return
+
+        filter_groups = tool.Search.get_filter_groups(self.module)
+
+        try:
+            query = tool.Search.export_filter_query(filter_groups)
+            results = ifcopenshell.util.selector.filter_elements(tool.Ifc.get(), query)
+        except:
+            return
+
+        description = json.dumps({"type": "BBIM_Search", "query": query})
+        group = [g for g in tool.Ifc.get().by_type("IfcGroup") if g.Name == self.name]
+        if group:
+            group = group[0]
+            group.Description = description
+        else:
+            group = ifcopenshell.api.run("group.add_group", tool.Ifc.get(), name=self.name, description=description)
+        if results:
+            ifcopenshell.api.run("group.assign_group", tool.Ifc.get(), products=list(results), group=group)
+
+    def draw(self, context):
+        row = self.layout.row()
+        row.prop(self, "name")
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+
+class LoadSearch(Operator, tool.Ifc.Operator):
+    bl_idname = "bim.load_search"
+    bl_label = "Load Search"
+    bl_description = "Load search filter from an IFC group"
+    bl_options = {"REGISTER", "UNDO"}
+    module: StringProperty()
+
+    def _execute(self, context):
+        filter_groups = tool.Search.get_filter_groups(self.module)
+        group = tool.Ifc.get().by_id(int(context.scene.BIMSearchProperties.saved_searches))
+        tool.Search.import_filter_query(tool.Search.get_group_query(group), filter_groups)
+
+    def draw(self, context):
+        props = context.scene.BIMSearchProperties
+        row = self.layout.row()
+        row.prop(props, "saved_searches", text="")
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+
+class ColourByProperty(Operator):
+    bl_idname = "bim.colour_by_property"
+    bl_label = "Colour by Property"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        IfcStore.begin_transaction(self)
+        self.store_state(context)
+        result = self._execute(context)
+        IfcStore.add_transaction_operation(self)
+        IfcStore.end_transaction(self)
+        return result
+
+    def _execute(self, context):
+        props = context.scene.BIMSearchProperties
+        query = props.colourscheme_query
+
+        if not query:
+            self.report({"ERROR"}, "No Query Provided")
+            return {"CANCELLED"}
+
+        colours = cycle(colour_list)
+        colourscheme = {}
+
+        if len(props.colourscheme):
+            colourscheme = {cs.name: {"colour": cs.colour[0:3], "total": 0} for cs in props.colourscheme}
+
+        for obj in context.visible_objects:
+            element = tool.Ifc.get_entity(obj)
+            if not element:
+                continue
+            value = str(ifcopenshell.util.selector.get_element_value(element, query))
+            if value in colourscheme:
+                colourscheme[value]["total"] += 1
+            else:
+                colourscheme[value] = {"colour": next(colours)[0:3], "total": 1}
+            obj.color = (*colourscheme[value]["colour"], 1)
+        if areas := [a for a in context.screen.areas if a.type == "VIEW_3D"]:
+            areas[0].spaces[0].shading.color_type = "OBJECT"
+
+        props.colourscheme.clear()
+        for value in sorted(colourscheme.keys()):
+            data = colourscheme[value]
+            new = props.colourscheme.add()
+            new.name = str(value)
+            new.total = data["total"]
+            new.colour = data["colour"][0:3]
+        return {"FINISHED"}
+
+    def store_state(self, context):
+        if areas := [a for a in context.screen.areas if a.type == "VIEW_3D"]:
+            self.transaction_data = {"area": areas[0], "color_type": areas[0].spaces[0].shading.color_type}
+
+    def rollback(self, data):
+        if data:
+            data["area"].spaces[0].shading.color_type = data["color_type"]
+
+    def commit(self, data):
+        if data:
+            data["area"].spaces[0].shading.color_type = "OBJECT"
+
+
+class SelectByProperty(Operator):
+    bl_idname = "bim.select_by_property"
+    bl_label = "Select by Property"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        props = context.scene.BIMSearchProperties
+        return props.active_colourscheme_index < len(props.colourscheme)
+
+    def execute(self, context):
+        props = context.scene.BIMSearchProperties
+        query = props.colourscheme_query
+
+        if not query:
+            self.report({"ERROR"}, "No Query Provided")
+            return {"CANCELLED"}
+
+        active_value = props.colourscheme[props.active_colourscheme_index].name
+
+        for obj in context.visible_objects:
+            element = tool.Ifc.get_entity(obj)
+            if not element:
+                continue
+            value = str(ifcopenshell.util.selector.get_element_value(element, query))
+            if value == active_value:
+                obj.select_set(True)
+        return {"FINISHED"}
+
+
+class SaveColourscheme(Operator, tool.Ifc.Operator):
+    bl_idname = "bim.save_colourscheme"
+    bl_label = "Save Colourscheme"
+    bl_description = "Save colourscheme to an IFC group"
+    bl_options = {"REGISTER", "UNDO"}
+    name: StringProperty(name="Name")
+
+    def _execute(self, context):
+        if not self.name:
+            return
+
+        props = context.scene.BIMSearchProperties
+        query = props.colourscheme_query
+
+        group = [g for g in tool.Ifc.get().by_type("IfcGroup") if g.Name == self.name]
+        colourscheme = {cs.name: {"colour": cs.colour[0:3], "total": cs.total} for cs in props.colourscheme}
+        if group:
+            group = group[0]
+            description = json.loads(group.Description)
+            description["colourscheme"] = colourscheme
+            description["colourscheme_query"] = query
+            group.Description = json.dumps(description)
+        else:
+            description = json.dumps(
+                {"type": "BBIM_Search", "colourscheme": colourscheme, "colourscheme_query": query}
+            )
+            group = ifcopenshell.api.run("group.add_group", tool.Ifc.get(), name=self.name, description=description)
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+
+class LoadColourscheme(Operator, tool.Ifc.Operator):
+    bl_idname = "bim.load_colourscheme"
+    bl_label = "Load Colourscheme"
+    bl_description = "Load colourscheme from an IFC group"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def _execute(self, context):
+        props = context.scene.BIMSearchProperties
+        group = tool.Ifc.get().by_id(int(props.saved_colourschemes))
+        description = json.loads(group.Description)
+        props.colourscheme_query = description.get("colourscheme_query")
+        props.colourscheme.clear()
+        for name, data in description.get("colourscheme", {}).items():
+            new = props.colourscheme.add()
+            new.name = name
+            new.total = data["total"]
+            new.colour = data["colour"]
+
+    def draw(self, context):
+        props = context.scene.BIMSearchProperties
+        row = self.layout.row()
+        row.prop(props, "saved_colourschemes", text="")
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
 
 
 class SelectGlobalId(Operator):
@@ -79,261 +402,71 @@ class SelectGlobalId(Operator):
 
     def execute(self, context):
         ifc_file = tool.Ifc.get()
-        props = context.scene.BIMSearchProperties
-        global_id = self.global_id or props.global_id
-        entity = ifc_file.by_guid(global_id)
+        global_id = self.global_id.strip()
+
+        if not global_id:
+            self.report({"ERROR"}, "Set Global ID for search.")
+            return {"CANCELLED"}
+
+        try:
+            entity = ifc_file.by_guid(global_id)
+        except RuntimeError:
+            self.report({"ERROR"}, f"No IFC entity found with guid '{global_id}'.")
+            return {"CANCELLED"}
+
         obj = tool.Ifc.get_object(entity)
         if not obj:
-            self.report({"ERROR"}, "No object found")
+            self.report({"ERROR"}, f"No Blender object found with guid '{global_id}'.")
+            return {"CANCELLED"}
+
         obj.select_set(True)
         bpy.context.view_layer.objects.active = obj
         return {"FINISHED"}
 
 
 class SelectIfcClass(Operator):
-    """Click to select all objects that match with the given IFC class"""
+    """Click to select all objects that match with the given IFC class\nSHIFT + Click to also match Predefined Type"""
 
     bl_idname = "bim.select_ifc_class"
     bl_label = "Select IFC Class"
     bl_options = {"REGISTER", "UNDO"}
-    ifc_class: StringProperty()
+    should_filter_predefined_type: BoolProperty(default=False)
+
+    def invoke(self, context, event):
+        self.should_filter_predefined_type = event.shift
+        return self.execute(context)
 
     def execute(self, context):
-        self.file = IfcStore.get_file()
-        for obj in context.visible_objects:
-            if not obj.BIMObjectProperties.ifc_definition_id or obj.is_library_indirect:
-                continue
-            element = self.file.by_id(obj.BIMObjectProperties.ifc_definition_id)
-            if does_keyword_exist(self.ifc_class, element.is_a(), context):
-                obj.select_set(True)
+        objects = context.selected_objects
+        classes = set()
+        predefined_types = set()
+        for obj in objects:
+            if element := tool.Ifc.get_entity(obj):
+                classes.add(element.is_a())
+                predefined_types.add(ifcopenshell.util.element.get_predefined_type(element))
+        for cls in classes:
+            for element in tool.Ifc.get().by_type(cls):
+                if (
+                    self.should_filter_predefined_type
+                    and ifcopenshell.util.element.get_predefined_type(element) not in predefined_types
+                ):
+                    continue
+                if obj := tool.Ifc.get_object(element):
+                    tool.Blender.select_object(obj)
         return {"FINISHED"}
-
-
-class SelectAttribute(Operator):
-    """Click to select all objects that match with the given Attribute Name and Value"""
-
-    bl_idname = "bim.select_attribute"
-    bl_label = "Select Attribute"
-    bl_options = {"REGISTER", "UNDO"}
-
-    def execute(self, context):
-        self.file = IfcStore.get_file()
-        props = context.scene.BIMSearchProperties
-        pattern = props.search_attribute_value
-        attribute_name = props.search_attribute_name
-        for obj in context.visible_objects:
-            if not obj.BIMObjectProperties.ifc_definition_id:
-                continue
-            element = self.file.by_id(obj.BIMObjectProperties.ifc_definition_id)
-            if context.scene.BIMSearchProperties.should_ignorecase:
-                data = element.get_info()
-                value = next((v for k, v in data.items() if k.lower() == attribute_name.lower()), None)
-            else:
-                value = getattr(element, attribute_name, None)
-            if does_keyword_exist(pattern, value, context):
-                obj.select_set(True)
-        return {"FINISHED"}
-
-
-class SelectPset(Operator):
-    """Click to select all objects that match with the given Pset Name, Properties Name and Value"""
-
-    bl_idname = "bim.select_pset"
-    bl_label = "Select Pset"
-    bl_options = {"REGISTER", "UNDO"}
-
-    def execute(self, context):
-        self.file = IfcStore.get_file()
-        props = context.scene.BIMSearchProperties
-        search_pset_name = props.search_pset_name
-        search_prop_name = props.search_prop_name
-        pattern = props.search_pset_value
-        for obj in context.visible_objects:
-            if not obj.BIMObjectProperties.ifc_definition_id:
-                continue
-            element = self.file.by_id(obj.BIMObjectProperties.ifc_definition_id)
-            psets = ifcopenshell.util.element.get_psets(element)
-            if search_pset_name == "":
-                props = {}
-                [props.update(p) for p in psets.values()]
-            else:
-                props = None
-            if context.scene.BIMSearchProperties.should_ignorecase:
-                props = props or next((v for k, v in psets.items() if k.lower() == search_pset_name.lower()), {})
-                value = str(next((v for k, v in props.items() if k.lower() == search_prop_name.lower()), None))
-            else:
-                props = props or psets.get(search_pset_name, {})
-                value = props.get(search_prop_name, None)
-            if does_keyword_exist(pattern, value, context):
-                obj.select_set(True)
-        return {"FINISHED"}
-
-
-class ColourByAttribute(Operator):
-    """Click to colour different objects according to given Attribute Name"""
-
-    bl_idname = "bim.colour_by_attribute"
-    bl_label = "Colour by Attribute"
-    bl_options = {"REGISTER", "UNDO"}
-
-    def execute(self, context):
-        IfcStore.begin_transaction(self)
-        self.store_state(context)
-        result = self._execute(context)
-        IfcStore.add_transaction_operation(self)
-        IfcStore.end_transaction(self)
-        return result
-
-    def _execute(self, context):
-        self.file = IfcStore.get_file()
-        colours = cycle(colour_list)
-        values = {}
-        attribute_name = context.scene.BIMSearchProperties.search_attribute_name
-        for obj in context.visible_objects:
-            if not obj.BIMObjectProperties.ifc_definition_id:
-                continue
-            element = self.file.by_id(obj.BIMObjectProperties.ifc_definition_id)
-            if context.scene.BIMSearchProperties.should_ignorecase:
-                data = element.get_info()
-                value = next((v for k, v in data.items() if k.lower() == attribute_name.lower()), None)
-            else:
-                value = getattr(element, attribute_name, None)
-            if value not in values:
-                values[value] = next(colours)
-            obj.color = values[value]
-        areas = [a for a in context.screen.areas if a.type == "VIEW_3D"]
-        if areas:
-            areas[0].spaces[0].shading.color_type = "OBJECT"
-        return {"FINISHED"}
-
-    def store_state(self, context):
-        areas = [a for a in context.screen.areas if a.type == "VIEW_3D"]
-        if areas:
-            self.transaction_data = {"area": areas[0], "color_type": areas[0].spaces[0].shading.color_type}
-
-    def rollback(self, data):
-        if data:
-            data["area"].spaces[0].shading.color_type = data["color_type"]
-
-    def commit(self, data):
-        if data:
-            data["area"].spaces[0].shading.color_type = "OBJECT"
-
-
-class ColourByPset(Operator):
-    """Click to colour different objects according to given Prop Name"""
-
-    bl_idname = "bim.colour_by_pset"
-    bl_label = "Colour by Pset"
-    bl_options = {"REGISTER", "UNDO"}
-
-    def execute(self, context):
-        IfcStore.begin_transaction(self)
-        self.store_state(context)
-        result = self._execute(context)
-        IfcStore.add_transaction_operation(self)
-        IfcStore.end_transaction(self)
-        return result
-
-    def _execute(self, context):
-        self.file = IfcStore.get_file()
-        colours = cycle(colour_list)
-        values = {}
-        search_pset_name = context.scene.BIMSearchProperties.search_pset_name
-        search_prop_name = context.scene.BIMSearchProperties.search_prop_name
-        for obj in context.visible_objects:
-            if not obj.BIMObjectProperties.ifc_definition_id:
-                continue
-            element = self.file.by_id(obj.BIMObjectProperties.ifc_definition_id)
-            psets = ifcopenshell.util.element.get_psets(element)
-            if search_pset_name == "":
-                props = {}
-                [props.update(p) for p in psets.values()]
-            else:
-                props = None
-            if context.scene.BIMSearchProperties.should_ignorecase:
-                props = props or next((v for k, v in psets.items() if k.lower() == search_pset_name.lower()), {})
-                value = str(next((v for k, v in props.items() if k.lower() == search_prop_name.lower()), None))
-            else:
-                props = props or psets.get(search_pset_name, {})
-                value = str(props.get(search_prop_name, None))
-            if value not in values:
-                values[value] = next(colours)
-            obj.color = values[value]
-        areas = [a for a in context.screen.areas if a.type == "VIEW_3D"]
-        if areas:
-            areas[0].spaces[0].shading.color_type = "OBJECT"
-        return {"FINISHED"}
-
-    def store_state(self, context):
-        areas = [a for a in context.screen.areas if a.type == "VIEW_3D"]
-        if areas:
-            self.transaction_data = {"area": areas[0], "color_type": areas[0].spaces[0].shading.color_type}
-
-    def rollback(self, data):
-        if data:
-            data["area"].spaces[0].shading.color_type = data["color_type"]
-
-    def commit(self, data):
-        if data:
-            data["area"].spaces[0].shading.color_type = "OBJECT"
-
-
-class ColourByClass(Operator):
-    """Click to colour different objects according to their IFC Classes"""
-
-    bl_idname = "bim.colour_by_class"
-    bl_label = "Colour by Class"
-    bl_options = {"REGISTER", "UNDO"}
-
-    def execute(self, context):
-        IfcStore.begin_transaction(self)
-        self.store_state(context)
-        result = self._execute(context)
-        IfcStore.add_transaction_operation(self)
-        IfcStore.end_transaction(self)
-        return result
-
-    def _execute(self, context):
-        self.file = IfcStore.get_file()
-        colours = cycle(colour_list)
-        ifc_classes = {}
-        for obj in context.visible_objects:
-            if not obj.BIMObjectProperties.ifc_definition_id:
-                continue
-            element = self.file.by_id(obj.BIMObjectProperties.ifc_definition_id)
-            ifc_class = element.is_a()
-            if ifc_class not in ifc_classes:
-                ifc_classes[ifc_class] = next(colours)
-            obj.color = ifc_classes[ifc_class]
-        areas = [a for a in context.screen.areas if a.type == "VIEW_3D"]
-        if areas:
-            areas[0].spaces[0].shading.color_type = "OBJECT"
-        return {"FINISHED"}
-
-    def store_state(self, context):
-        areas = [a for a in context.screen.areas if a.type == "VIEW_3D"]
-        if areas:
-            self.transaction_data = {"area": areas[0], "color_type": areas[0].spaces[0].shading.color_type}
-
-    def rollback(self, data):
-        if data:
-            data["area"].spaces[0].shading.color_type = data["color_type"]
-
-    def commit(self, data):
-        if data:
-            data["area"].spaces[0].shading.color_type = "OBJECT"
 
 
 class ResetObjectColours(Operator):
-    """Reset the colour of selected objects"""
+    """Reset the colour of visible objects"""
 
     bl_idname = "bim.reset_object_colours"
     bl_label = "Reset Colours"
 
     def execute(self, context):
-        for obj in context.selected_objects:
+        for obj in context.visible_objects:
             obj.color = (1, 1, 1, 1)
+        props = context.scene.BIMSearchProperties
+        props.colourscheme.clear()
         return {"FINISHED"}
 
 
@@ -345,15 +478,12 @@ class ToggleFilterSelection(Operator):
 
     def execute(self, context):
         props = bpy.context.scene.BIMSearchProperties
-        if self.action == "SELECT":
-            self.selecting_actionbool = True
-        else:
-            self.selecting_actionbool = False
+        self.selecting_actionbool = self.action == "SELECT"
         if props.filter_type == "CLASSES":
             for ifc_class in props.filter_classes:
                 ifc_class.is_selected = self.selecting_actionbool
-        elif props.filter_type == "BUILDINGSTOREYS":
-            for building_storey in props.filter_building_storeys:
+        elif props.filter_type == "CONTAINER":
+            for building_storey in props.filter_container:
                 building_storey.is_selected = self.selecting_actionbool
         return {"FINISHED"}
 
@@ -363,6 +493,13 @@ class ActivateIfcClassFilter(Operator):
 
     bl_idname = "bim.activate_ifc_class_filter"
     bl_label = "Filter by Class"
+
+    @classmethod
+    def poll(cls, context):
+        if not context.selected_objects:
+            cls.poll_message_set("Select objects to filter.")
+            return False
+        return True
 
     def invoke(self, context, event):
         props = bpy.context.scene.BIMSearchProperties
@@ -395,44 +532,51 @@ class ActivateIfcClassFilter(Operator):
             "filter_classes",
             context.scene.BIMSearchProperties,
             "filter_classes_index",
-            rows=20
-            if len(bpy.context.scene.BIMSearchProperties.filter_classes) > 20
-            else len(bpy.context.scene.BIMSearchProperties.filter_classes),
+            rows=min(len(bpy.context.scene.BIMSearchProperties.filter_classes), 20),
         )
         row = self.layout.row(align=True)
         row.operator("bim.toggle_filter_selection", text="Select All").action = "SELECT"
         row.operator("bim.toggle_filter_selection", text="Deselect All").action = "DESELECT"
 
 
-class ActivateIfcBuildingStoreyFilter(Operator):
+class ActivateContainerFilter(Operator):
     """Filter the current selection by Building Storey"""
 
-    bl_idname = "bim.activate_ifc_building_storey_filter"
-    bl_label = "Filter by Building Storey"
+    bl_idname = "bim.activate_ifc_container_filter"
+    bl_label = "Filter by Container"
+
+    @classmethod
+    def poll(cls, context):
+        if not context.selected_objects:
+            cls.poll_message_set("Select objects to filter.")
+            return False
+        return True
 
     def invoke(self, context, event):
         props = bpy.context.scene.BIMSearchProperties
-        props.filter_building_storeys.clear()
+        props.filter_container.clear()
 
-        ifc_building_storeys = {}
+        containers = {}
+        containers.setdefault("None", 0)
         for obj in context.selected_objects:
-            storey = tool.Misc.get_object_storey(obj)
-            if not storey:
+            container = tool.Spatial.get_container(tool.Ifc.get_entity(obj))
+            if not container:
+                containers["None"] += 1
                 continue
-            ifc_building_storeys.setdefault(storey.Name, 0)
-            ifc_building_storeys[storey.Name] += 1
+            containers.setdefault(container.Name, 0)
+            containers[container.Name] += 1
 
-        for name, total in dict(sorted(ifc_building_storeys.items())).items():
-            new = props.filter_building_storeys.add()
+        for name, total in dict(sorted(containers.items())).items():
+            new = props.filter_container.add()
             new.name = name
             new.total = total
 
-        props.filter_type = "BUILDINGSTOREYS"
+        props.filter_type = "CONTAINER"
 
         return context.window_manager.invoke_props_dialog(self, width=250)
 
     def execute(self, context):
-        bpy.context.scene.BIMSearchProperties.filter_building_storeys.clear()
+        bpy.context.scene.BIMSearchProperties.filter_container.clear()
         return {"FINISHED"}
 
     def draw(self, context):
@@ -440,248 +584,48 @@ class ActivateIfcBuildingStoreyFilter(Operator):
             "BIM_UL_ifc_building_storey_filter",
             "",
             context.scene.BIMSearchProperties,
-            "filter_building_storeys",
+            "filter_container",
             context.scene.BIMSearchProperties,
-            "filter_building_storeys_index",
-            rows=20
-            if len(bpy.context.scene.BIMSearchProperties.filter_building_storeys) > 20
-            else len(bpy.context.scene.BIMSearchProperties.filter_building_storeys),
+            "filter_container_index",
+            rows=min(len(bpy.context.scene.BIMSearchProperties.filter_container), 20),
         )
         row = self.layout.row(align=True)
         row.operator("bim.toggle_filter_selection", text="Select All").action = "SELECT"
         row.operator("bim.toggle_filter_selection", text="Deselect All").action = "DESELECT"
 
 
-class UnhideAllElements(Operator):
-    """Filter model elements based on selection"""
+class ShowAllElements(Operator):
+    """Show all Physical objects in the 3D View.
+    Warning: Pressing this button will not work if collections are excluded in the outliner Panel.
+    """
 
-    bl_idname = "bim.reset_3d_view"
-    bl_label = "Reset 3D View"
-    bl_idname = "bim.unhide_all_elements"
-    bl_label = "Unhide All Elements"
+    bl_idname = "bim.show_scene_elements"
+    bl_label = "Shows All Elements"
+    bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        for obj in bpy.data.scenes["Scene"].objects:
-            obj.hide_set(False)
+        core.show_scene_elements(tool.Spatial)
         return {"FINISHED"}
 
 
-class FilterModelElements(Operator):
-    """Filter model elements based on selection"""
+class SelectSimilar(Operator, tool.Ifc.Operator):
+    bl_idname = "bim.select_similar"
+    bl_label = "Select Similar"
+    bl_options = {"REGISTER", "UNDO"}
 
-    bl_idname = "bim.filter_model_elements"
-    bl_label = "Filter Model Elements"
-    option: StringProperty("select|isolate|hide")
+    key: bpy.props.StringProperty()
 
-    def execute(self, context):
-        selector = context.scene.IfcSelectorProperties
-        selection = selector.selector_query_syntax if selector.manual_override else self.add_groups(selector)
-        selector.selector_query_syntax = selection
-        self.update_model_view(context, selection)
-        return {"FINISHED"}
-
-    def add_groups(self, selector):
-        selection = ""
-        for group_index, group in enumerate(selector.groups):
-            if group_index != 0:
-                selection += " | "
-            selection += "(" if len(selector.groups) > 1 else ""
-            selection = self.add_queries(selection, group)
-
-            selection += ")" if len(selector.groups) > 1 else ""
-        return selection
-
-    def add_queries(self, selection, group):
-        for query_index, query in enumerate(group.queries):
-            if query_index != 0:
-                selection += " & " if query.and_or == "and" else " | "
-
-            if query.selector == "IFC Class":
-                active_option = query.active_option.split(": ")[1]
-                selection += f".{active_option}"
-                selection = self.add_filters(selection, query)
-
-            elif query.selector == "GlobalId":
-                selection += f"#{query.value}"
-
-            elif query.selector == "IfcElementType":
-                index = int(query.active_sub_option.split(":")[0])
-                selection += f"* #{query.sub_options[index].global_id}"
-
-            elif query.selector == "IfcSpatialElement":
-                index = int(query.active_sub_option.split(":")[0])
-                selection += f"@ #{query.sub_options[index].global_id}"
-        return selection
-
-    def add_filters(self, selection, query):
-        for f_index, f in enumerate(query.filters):
-
-            if f_index != 0:
-                selection += " & " if f.and_or == "and" else " | "
-                selection += f".{query.active_option}"
-
-            selection += "["
-
-            if f.selector == "IfcPropertySet":
-                selection += f'{f.active_option.split(": ")[1]}.{f.active_sub_option.split(": ")[1]} {"!" if f.negation else ""}="{f.value}"'
-            elif f.selector == "Attribute":
-                selection += f'{f.attribute} {"!" if f.negation else ""}= "{f.value}"'
-
-            selection += "]"
-        return selection
-
-    def update_model_view(self, context, selection):
-        query = Selector.parse(IfcStore.file, selection)
-        sel_element_ids = [e.id() for e in query]
-        bpy.ops.object.select_all(action="DESELECT")
-
-        for obj in bpy.data.scenes["Scene"].objects:
-            obj.hide_set(False)  # reset 3d view
-
-            if self.option == "select":
-                if obj.BIMObjectProperties.ifc_definition_id in sel_element_ids:
-                    obj.select_set(True)
-            elif self.option == "isolate":
-                if obj.BIMObjectProperties.ifc_definition_id not in sel_element_ids:
-                    obj.hide_set(True)
-            elif self.option == "hide":
-                if obj.BIMObjectProperties.ifc_definition_id in sel_element_ids:
-                    obj.hide_set(True)
-
-
-# This needs to be moved into ui code, I know ;) - vulevukusej
-class IfcSelector(Operator):
-    """Select elements in model with IFC Selector"""
-
-    bl_idname = "bim.ifc_selector"
-    bl_label = "Select elements with IFC Selector"
-
-    def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self, width=800)
-
-    @classmethod
-    def poll(cls, context):
-        return IfcStore.get_file()
-
-    def execute(self, context):
-        return {"FINISHED"}
-
-    def draw(self, context):
-        from . import ui
-
-        ui.IfcSelectorUI.draw(context, self.layout)
-
-
-class SaveSelectorQuery(Operator):
-    bl_idname = "bim.save_selector_query"
-    bl_label = "Save Selector Query"
-    save_name: StringProperty()
-
-    def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self, width=400)
-
-    def draw(self, context):
-        layout = self.layout
-        layout.prop(self, "save_name")
-
-    def execute(self, context):
-        ifc_selector = context.scene.IfcSelectorProperties
-        new = ifc_selector.query_library.add()
-        new.name = self.save_name
-        new.query = ifc_selector.selector_query_syntax
-        return {"FINISHED"}
-
-
-class OpenQueryLibrary(Operator):
-    """Open Query Library"""
-
-    bl_idname = "bim.open_query_library"
-    bl_label = "Open Query Library"
-
-    def invoke(self, context, event):
-        return context.window_manager.invoke_popup(self, width=400)
-
-    def draw(self, context):
-        layout = self.layout
-        ifc_selector = context.scene.IfcSelectorProperties
-
-        for index, query in enumerate(ifc_selector.query_library):
-            row = layout.row(align=True)
-            row.prop(query, "query", text=query.name)
-            op = row.operator("bim.load_query", icon="SORT_ASC", text="")
-            op.index = index
-
-            row.context_pointer_set(name="bim_prop_group", data=ifc_selector)
-            op = row.operator("bim.edit_blender_collection", icon="REMOVE", text="")
-            op.option = "remove"
-            op.collection = "query_library"
-            op.index = index
-
-    def execute(self, context):
-        return {"FINISHED"}
-
-
-class LoadQuery(Operator):
-    bl_idname = "bim.load_query"
-    bl_label = "Load Query"
-    index: IntProperty()
-
-    def invoke(self, context, event):
-        close_operator_panel(event)
-        return self.execute(context)
-
-    def execute(self, context):
-        ifc_selector = context.scene.IfcSelectorProperties
-        ifc_selector.selector_query_syntax = ifc_selector.query_library[self.index].query
-        return {"FINISHED"}
-
-
-class AddToIfcGroup(Operator):
-    bl_idname = "bim.add_to_ifc_group"
-    bl_label = "Add to IFC Group"
-    group_name: StringProperty(name="Group Name")
-
-    def invoke(self, context, event):
-        bpy.ops.bim.load_groups()
-        return context.window_manager.invoke_props_dialog(self, width=400)
-
-    def draw(self, context):
-        self.props = context.scene.BIMGroupProperties
-        row = self.layout.row()
-        row.operator("bim.add_group")
-
-        self.layout.template_list(
-            "BIM_UL_groups",
-            "",
-            self.props,
-            "groups",
-            self.props,
-            "active_group_index",
-        )
-
-        if self.props.active_group_id:
-            for attribute in self.props.group_attributes:
-                if attribute.name in ["Name", "Description"]:
-                    row = self.layout.row(align=True)
-                    row.prop(attribute, "string_value", text=attribute.name)
-
-    def execute(self, context):
-        active_group_index = self.props.active_group_index
-        ifc_definition_id = self.props.groups[active_group_index].ifc_definition_id
-
-        bpy.ops.bim.enable_editing_group(group=ifc_definition_id)
-
-        selector_query_syntax = context.scene.IfcSelectorProperties.selector_query_syntax
-
-        for attribute in self.props.group_attributes:
-            if attribute.name == "Description":
-                if "*selector*" not in attribute.string_value:
-                    attribute.string_value += f" *selector*{selector_query_syntax}*selector*"
-                else:
-                    new_description = attribute.string_value.split("*selector*")
-                    new_description[1] = selector_query_syntax
-                    attribute.string_value = "*selector*".join(new_description)
-
-        bpy.ops.bim.edit_group()
-        bpy.ops.bim.disable_group_editing_ui()
-        return {"FINISHED"}
+    def _execute(self, context):
+        props = context.scene.BIMSearchProperties
+        obj = context.active_object
+        element = tool.Ifc.get_entity(obj)
+        key = self.key
+        if key == "PredefinedType":
+            key = "predefined_type"
+        value = ifcopenshell.util.selector.get_element_value(element, key)
+        for obj in context.visible_objects:
+            element = tool.Ifc.get_entity(obj)
+            if not element:
+                continue
+            if ifcopenshell.util.selector.get_element_value(element, key) == value:
+                obj.select_set(True)

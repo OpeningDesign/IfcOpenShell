@@ -16,22 +16,38 @@
 # You should have received a copy of the GNU General Public License
 # along with BlenderBIM Add-on.  If not, see <http://www.gnu.org/licenses/>.
 
-import blenderbim.core.style
+from __future__ import annotations
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    import bpy
+    import ifcopenshell
+    import blenderbim.tool as tool
 
 
-def edit_object_placement(ifc, geometry, surveyor, obj=None):
+def edit_object_placement(
+    ifc: tool.Ifc, geometry: tool.Geometry, surveyor: tool.Surveyor, obj: Optional[bpy.types.Object] = None
+) -> None:
     element = ifc.get_entity(obj)
     if not element:
         return
     geometry.clear_cache(element)
     geometry.clear_scale(obj)
+    geometry.get_blender_offset_type(obj)
     ifc.run("geometry.edit_object_placement", product=element, matrix=surveyor.get_absolute_matrix(obj))
     geometry.record_object_position(obj)
 
 
 def add_representation(
-    ifc, geometry, style, surveyor, obj=None, context=None, ifc_representation_class=None, profile_set_usage=None
-):
+    ifc: tool.Ifc,
+    geometry: tool.Geometry,
+    style: tool.Style,
+    surveyor: tool.Surveyor,
+    obj: bpy.types.Object,
+    context: ifcopenshell.entity_instance,
+    ifc_representation_class: Optional[str] = None,
+    profile_set_usage: Optional[ifcopenshell.entity_instance] = None,
+) -> ifcopenshell.entity_instance:
     element = ifc.get_entity(obj)
     if not element:
         return
@@ -56,6 +72,9 @@ def add_representation(
         profile_set_usage=profile_set_usage,
     )
 
+    if not representation:
+        raise IncompatibleRepresentationError()
+
     if geometry.is_body_representation(representation):
         [geometry.run_style_add_style(obj=mat) for mat in geometry.get_object_materials_without_styles(obj)]
         ifc.run(
@@ -79,35 +98,67 @@ def add_representation(
 
 
 def switch_representation(
-    geometry,
-    obj=None,
-    representation=None,
-    should_reload=True,
-    is_global=True,
-    should_sync_changes_first=False,
-):
+    ifc: tool.Ifc,
+    geometry: tool.Geometry,
+    obj: bpy.types.Object,
+    representation: ifcopenshell.entity_instance,
+    should_reload: bool = True,
+    is_global: bool = True,
+    should_sync_changes_first: bool = False,
+    apply_openings: bool = True,
+) -> None:
+    """Function can switch to representation that wasn't yet assigned to that object. See #2766.
+
+    `should_sync_changes_first` - sync ifc representation with current state of `obj.data`;
+
+    `should_reload` - reload `obj.data` from ifc representation;
+
+    `is_global` - replace mesh data for all users of `obj.data`, not just `obj`;
+
+    """
     if should_sync_changes_first and geometry.is_edited(obj) and not geometry.is_box_representation(representation):
         representation_id = geometry.get_representation_id(representation)
         geometry.run_geometry_update_representation(obj=obj)
         if not geometry.does_representation_id_exist(representation_id):
             return
 
-    representation = geometry.resolve_mapped_representation(representation)
-    existing_data = geometry.get_representation_data(representation)
+    entity = ifc.get_entity(obj)
+    current_obj_data = geometry.get_object_data(obj)
 
-    if should_reload or not existing_data:
-        data = geometry.import_representation(obj, representation)
-        geometry.rename_object(data, geometry.get_representation_name(representation))
-        geometry.link(representation, data)
+    if not current_obj_data and geometry.is_text_literal(representation):
+        return
+
+    has_openings = apply_openings and getattr(entity, "HasOpenings", None)
+    if has_openings:
+        # if it has openings make sure to switch to element's mapped representation
+        representation = geometry.unresolve_type_representation(representation, entity)
     else:
-        data = existing_data
+        # doesn't resolve mapped representations in case if it's going to have openings
+        # otherwise we would also add openings to the type and other occurences mesh data
+        representation = geometry.resolve_mapped_representation(representation)
 
-    geometry.change_object_data(obj, data, is_global=is_global)
+    old_repr_data = geometry.get_representation_data(representation)
+    if should_reload or not old_repr_data:
+        new_repr_data = geometry.import_representation(obj, representation, apply_openings=apply_openings)
+        geometry.rename_object(new_repr_data, geometry.get_representation_name(representation))
+        geometry.link(representation, new_repr_data)
+    else:
+        new_repr_data = old_repr_data
 
-    if should_reload and existing_data:
-        geometry.delete_data(existing_data)
+    geometry.change_object_data(obj, new_repr_data, is_global=is_global and not has_openings)
+    geometry.record_object_materials(obj)
+
+    # we assume that all the occurences and the type have the same representation context active
+    # so geometry.delete_data cannot remove the data that's still used by some other object
+    if should_reload and old_repr_data:
+        # if current object was using some temporary mesh (like during profile edit mode) instead of `old_repr_data`
+        # then `change_object_data` won't switch the mesh for all the occurences and we need to do it explicitly
+        if current_obj_data != old_repr_data and geometry.has_data_users(old_repr_data):
+            geometry.replace_object_data_globally(old_repr_data, new_repr_data)
+        geometry.delete_data(old_repr_data)
 
     geometry.clear_modifiers(obj)
+    geometry.clear_cache(entity)
 
 
 def get_representation_ifc_parameters(geometry, obj=None, should_sync_changes_first=False):
@@ -115,20 +166,24 @@ def get_representation_ifc_parameters(geometry, obj=None, should_sync_changes_fi
 
 
 def remove_representation(ifc, geometry, obj=None, representation=None):
+    """Consider changing obj representation before using the function,
+    otherwise it will replace object with empty."""
+
     element = ifc.get_entity(obj)
-    type = geometry.get_element_type(element)
-    if type and (geometry.is_mapped_representation(representation) or geometry.is_type_product(element)):
+    element_type = geometry.get_element_type(element)
+    data = None
+    if element_type and (geometry.is_mapped_representation(representation) or geometry.is_type_product(element)):
         representation = geometry.resolve_mapped_representation(representation)
         data = geometry.get_representation_data(representation)
         if data and geometry.has_data_users(data):
-            for element in geometry.get_elements_of_type(type):
+            for element in geometry.get_elements_of_type(element_type):
                 obj = ifc.get_object(element)
                 if obj:
                     obj = geometry.replace_object_with_empty(obj)
-            obj = ifc.get_object(type)
+            obj = ifc.get_object(element_type)
             if obj:
                 obj = geometry.replace_object_with_empty(obj)
-        ifc.run("geometry.unassign_representation", product=type, representation=representation)
+        ifc.run("geometry.unassign_representation", product=element_type, representation=representation)
         ifc.run("geometry.remove_representation", representation=representation)
     else:
         data = geometry.get_representation_data(representation)
@@ -136,6 +191,17 @@ def remove_representation(ifc, geometry, obj=None, representation=None):
             geometry.replace_object_with_empty(obj)
         ifc.run("geometry.unassign_representation", product=element, representation=representation)
         ifc.run("geometry.remove_representation", representation=representation)
+    if data:
+        geometry.delete_data(data)
+
+
+def purge_unused_representations(ifc, geometry):
+    purged_representations = 0
+    for representation in geometry.get_model_representations():
+        if ifc.get().get_total_inverses(representation) == 0:
+            ifc.run("geometry.remove_representation", representation=representation)
+            purged_representations += 1
+    return purged_representations
 
 
 def select_connection(geometry, connection=None):
@@ -144,3 +210,30 @@ def select_connection(geometry, connection=None):
 
 def remove_connection(geometry, connection=None):
     geometry.remove_connection(connection)
+
+
+def get_similar_openings(ifc, opening):
+    model = ifc.get()
+    all_openings = model.by_type("IfcOpeningElement")
+    similar_openings = [o for o in all_openings if o.ObjectPlacement == opening.ObjectPlacement and o != opening]
+    return similar_openings
+
+
+def get_similar_openings_building_objs(ifc, similar_openings):
+    building_objs = []
+    for similar_opening in similar_openings:
+        building_objs.append(ifc.get_object(similar_opening.VoidsElements[0].RelatingBuildingElement))
+    return building_objs
+
+
+def edit_similar_opening_placement(geometry, opening=None, similar_openings=None):
+    if not opening or not similar_openings:
+        return
+    for similar_opening in similar_openings:
+        old_placement = similar_opening.ObjectPlacement
+        similar_opening.ObjectPlacement = opening.ObjectPlacement
+        geometry.delete_opening_object_placement(old_placement)
+
+
+class IncompatibleRepresentationError(Exception):
+    pass

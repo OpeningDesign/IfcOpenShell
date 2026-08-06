@@ -17,19 +17,74 @@
 # along with BlenderBIM Add-on.  If not, see <http://www.gnu.org/licenses/>.
 
 import os
+import blenderbim.bim
 from blenderbim.bim.helper import prop_with_search
-from bpy.types import Panel, UIList
+from bpy.types import Panel, Menu, UIList
 from blenderbim.bim.ifc import IfcStore
-from blenderbim.bim.module.project.data import ProjectData
+from blenderbim.bim.module.project.data import ProjectData, LinksData
+
+
+class BIM_MT_project(Menu):
+    bl_idname = "BIM_MT_project"
+    bl_label = "New IFC Project"
+
+    def draw(self, context):
+        self.layout.operator("bim.new_project", text="New Metric (m) Project").preset = "metric_m"
+        self.layout.operator("bim.new_project", text="New Metric (mm) Project").preset = "metric_mm"
+        self.layout.operator("bim.new_project", text="New Imperial (ft) Project").preset = "imperial_ft"
+        self.layout.operator("bim.new_project", text="New Demo Project").preset = "demo"
+        self.layout.operator("bim.new_project", text="New Project Wizard").preset = "wizard"
+
+
+class BIM_MT_new_project(Menu):
+    bl_idname = "BIM_MT_new_project"
+    bl_label = "New Project"
+
+    def draw(self, context):
+        self.layout.operator_context = "INVOKE_DEFAULT"
+        op = self.layout.operator("bim.load_project", text="Open IFC Project", icon="FILEBROWSER")
+        op.should_start_fresh_session = True
+        # Do we need to set it back to exec default?
+        # self.layout.operator_context = "EXEC_DEFAULT"
+        self.layout.separator()
+        self.layout.label(text="New IFC Project", icon_value=blenderbim.bim.icons["IFC"].icon_id)
+        self.layout.operator("bim.new_project", text="Metric (m) Project").preset = "metric_m"
+        self.layout.operator("bim.new_project", text="Metric (mm) Project").preset = "metric_mm"
+        self.layout.operator("bim.new_project", text="Imperial (ft) Project").preset = "imperial_ft"
+        self.layout.operator("bim.new_project", text="Demo Project").preset = "demo"
+        self.layout.operator("bim.new_project", text="Project Wizard").preset = "wizard"
+        self.layout.separator()
+        self.layout.label(text="New Blender Project", icon="BLENDER")
+        # In theory we can dynamically grab the list from list(bpy.utils.app_template_paths())
+        self.layout.operator("wm.read_homefile", text="General Project").app_template = ""
+        self.layout.operator("wm.read_homefile", text="2D Animation Project").app_template = "2D_Animation"
+        self.layout.operator("wm.read_homefile", text="Sculpting Project").app_template = "Sculpting"
+        self.layout.operator("wm.read_homefile", text="VFX Project").app_template = "VFX"
+        self.layout.operator("wm.read_homefile", text="Video Editing Project").app_template = "Video_Editing"
+
+
+def file_menu(self, context):
+    self.layout.menu("BIM_MT_project", icon="COLLECTION_NEW")
+    op = self.layout.operator("bim.load_project", text="Open IFC Project", icon="FILEBROWSER")
+    op.should_start_fresh_session = True
+    self.layout.separator()
+    op = self.layout.operator("bim.save_project", icon="FILE_TICK", text="Save IFC Project")
+    op.should_save_as = False
+    op = self.layout.operator("bim.save_project", text="Save IFC Project As...")
+    op.should_save_as = True
+    self.layout.separator()
+    self.layout.operator("bim.revert_project")
+    self.layout.separator()
 
 
 class BIM_PT_project(Panel):
-    bl_label = "IFC Project"
+    bl_label = "Current Project"
     bl_idname = "BIM_PT_project"
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "scene"
-    bl_parent_id = "BIM_PT_project_info"
+    bl_options = {"HIDE_HEADER"}
+    bl_parent_id = "BIM_PT_tab_project_info"
 
     def draw(self, context):
         if not ProjectData.is_loaded:
@@ -77,6 +132,8 @@ class BIM_PT_project(Panel):
         row = self.layout.row()
         row.prop(pprops, "should_cache")
         row = self.layout.row()
+        row.prop(pprops, "should_load_geometry")
+        row = self.layout.row()
         row.prop(pprops, "should_use_native_meshes")
         row = self.layout.row()
         row.prop(pprops, "should_merge_materials_by_colour")
@@ -88,6 +145,8 @@ class BIM_PT_project(Panel):
         row.prop(pprops, "deflection_tolerance")
         row = self.layout.row()
         row.prop(pprops, "angular_tolerance")
+        row = self.layout.row()
+        row.prop(pprops, "void_limit")
         row = self.layout.row()
         row.prop(pprops, "distance_limit")
         row = self.layout.row()
@@ -110,7 +169,6 @@ class BIM_PT_project(Panel):
         row.label(text=os.path.basename(props.ifc_file) or "No File Found", icon="FILE")
 
         if IfcStore.get_file():
-            row.prop(pprops, "is_authoring", icon="MODIFIER", text="")
             if pprops.is_editing:
                 row.operator("bim.edit_header", icon="CHECKMARK", text="")
                 row.operator("bim.disable_editing_header", icon="CANCEL", text="")
@@ -150,20 +208,19 @@ class BIM_PT_project(Panel):
 
         if props.ifc_file:
             row = self.layout.row(align=True)
-            row.label(text="Saved", icon="EXPORT")
+            if context.scene.BIMProperties.is_dirty:
+                row.label(text="Saved*", icon="EXPORT")
+            else:
+                row.label(text="Saved", icon="EXPORT")
             row.label(text=ProjectData.data["last_saved"])
 
             row = self.layout.row(align=True)
             row.prop(props, "ifc_file", text="")
-            row.operator("bim.reload_ifc_file", icon="FILE_REFRESH", text="")
             row.operator("bim.select_ifc_file", icon="FILE_FOLDER", text="")
-
-        row = self.layout.row(align=True)
-        op = row.operator("export_ifc.bim", icon="EXPORT", text="Save Project")
-        op.should_save_as = False
-        op = row.operator("export_ifc.bim", icon="FILE_TICK", text="Save As")
-        op.should_save_as = True
-        row.operator("bim.unload_project", text="", icon="X")
+            row.operator("bim.unload_project", text="", icon="CANCEL")
+        else:
+            row = self.layout.row()
+            row.label(text="File Not Saved", icon="ERROR")
 
     def draw_create_project_ui(self, context):
         props = context.scene.BIMProperties
@@ -181,30 +238,38 @@ class BIM_PT_project(Panel):
 
         row = self.layout.row(align=True)
         row.operator("bim.create_project")
-        row.operator("bim.load_project")
+        row.operator("bim.load_project").should_start_fresh_session = False
 
 
 class BIM_PT_project_library(Panel):
-    bl_label = "IFC Project Library"
+    bl_label = "Project Library"
     bl_idname = "BIM_PT_project_library"
     bl_options = {"DEFAULT_CLOSED"}
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "scene"
-    bl_parent_id = "BIM_PT_project_setup"
+    bl_parent_id = "BIM_PT_tab_project_setup"
 
     def draw(self, context):
         self.layout.use_property_decorate = False
         self.layout.use_property_split = True
         self.props = context.scene.BIMProjectProperties
         row = self.layout.row(align=True)
-        row.label(text=IfcStore.library_path or "No Library Loaded", icon="ASSET_MANAGER")
+        row.prop(self.props, "library_file", text="")
+        if self.props.library_file == "0":
+            row.operator("bim.select_library_file", icon="FILE_FOLDER", text="")
+        row = self.layout.row(align=True)
         if IfcStore.library_file:
-            row.label(text=IfcStore.library_file.schema)
+            row.label(
+                text=os.path.splitext(os.path.basename(IfcStore.library_path))[0]
+                + f" - {IfcStore.library_file.schema}",
+                icon="ASSET_MANAGER",
+            )
+            row.operator("bim.append_library_element_by_query", text="", icon="APPEND_BLEND")
             row.operator("bim.save_library_file", text="", icon="EXPORT")
-        row.operator("bim.select_library_file", icon="FILE_FOLDER", text="")
-        if IfcStore.library_file:
             self.draw_library_ul()
+        else:
+            row.label(text="No Library Loaded", icon="ASSET_MANAGER")
 
     def draw_library_ul(self):
         if not self.props.library_elements:
@@ -227,13 +292,13 @@ class BIM_PT_project_library(Panel):
 
 
 class BIM_PT_links(Panel):
-    bl_label = "IFC Links"
+    bl_label = "Links"
     bl_idname = "BIM_PT_links"
     bl_options = {"DEFAULT_CLOSED"}
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "scene"
-    bl_parent_id = "BIM_PT_project_setup"
+    bl_parent_id = "BIM_PT_tab_project_setup"
 
     def draw(self, context):
         self.props = context.scene.BIMProjectProperties
@@ -248,6 +313,46 @@ class BIM_PT_links(Panel):
                 self.props,
                 "active_link_index",
             )
+
+        if LinksData.enable_culling:
+            row = self.layout.row(align=True)
+            row.label(text="Object Culling Enabled", icon="MOD_TRIANGULATE")
+
+        if not LinksData.linked_data or not self.props.links:
+            if self.props.links:
+                row = self.layout.row(align=True)
+                row.label(text="No Object Selected", icon="QUESTION")
+            return
+
+        row = self.layout.row(align=True)
+        row.label(text="")
+        row.operator("bim.append_inspected_linked_element", icon="APPEND_BLEND", text="")
+
+        for name, value in LinksData.linked_data["attributes"].items():
+            row = self.layout.row(align=True)
+            row.label(text=name)
+            row.label(text=value)
+
+        for pset in LinksData.linked_data["properties"]:
+            box = self.layout.box()
+            row = box.row(align=True)
+            row.label(text=pset[0], icon="COPY_ID")
+            for name, value in pset[1].items():
+                row = box.row(align=True)
+                row.label(text=name)
+                row.label(text=value)
+
+        if LinksData.linked_data["type_properties"]:
+            row = self.layout.row()
+            row.label(icon="LINKED", text="Type Properties")
+            for pset in LinksData.linked_data["type_properties"]:
+                box = self.layout.box()
+                row = box.row(align=True)
+                row.label(text=pset[0], icon="COPY_ID")
+                for name, value in pset[1].items():
+                    row = box.row(align=True)
+                    row.label(text=name)
+                    row.label(text=value)
 
 
 class BIM_UL_library(UIList):
@@ -299,6 +404,13 @@ class BIM_UL_links(UIList):
             if item.is_loaded:
                 row.label(text=item.name)
                 op = row.operator(
+                    "bim.toggle_link_selectability",
+                    text="",
+                    icon="RESTRICT_SELECT_OFF" if item.is_selectable else "RESTRICT_SELECT_ON",
+                    emboss=False,
+                )
+                op.link = item.name
+                op = row.operator(
                     "bim.toggle_link_visibility",
                     text="",
                     icon="CUBE" if item.is_wireframe else "MESH_CUBE",
@@ -316,9 +428,25 @@ class BIM_UL_links(UIList):
                 op.mode = "VISIBLE"
                 op = row.operator("bim.unload_link", text="", icon="UNLINKED")
                 op.filepath = item.name
+                op = row.operator("bim.reload_link", text="", icon="FILE_REFRESH")
+                op.filepath = item.name
             else:
                 row.prop(item, "name", text="")
                 op = row.operator("bim.load_link", text="", icon="LINKED")
                 op.filepath = item.name
                 op = row.operator("bim.unlink_ifc", text="", icon="X")
                 op.filepath = item.name
+
+
+class BIM_PT_purge(Panel):
+    bl_label = "Purge Data"
+    bl_options = {"DEFAULT_CLOSED"}
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "scene"
+    bl_parent_id = "BIM_PT_tab_quality_control"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("bim.purge_unused_profiles")
+        layout.operator("bim.purge_unused_types")

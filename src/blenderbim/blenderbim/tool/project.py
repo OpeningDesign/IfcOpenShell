@@ -19,18 +19,29 @@
 import os
 import bpy
 import ifcopenshell
+import ifcopenshell.util.representation
 import ifcopenshell.util.unit
+import blenderbim.core.aggregate
+import blenderbim.core.context
 import blenderbim.core.tool
+import blenderbim.core.root
+import blenderbim.core.unit
+import blenderbim.core.owner
+import blenderbim.bim.schema
 import blenderbim.tool as tool
 from blenderbim.bim.ifc import IfcStore
+from pathlib import Path
+from typing import Optional
 
 
 class Project(blenderbim.core.tool.Project):
     @classmethod
-    def append_all_types_from_template(cls, template):
+    def append_all_types_from_template(cls, template: str) -> None:
         # TODO refactor
-        filepath = os.path.join(bpy.context.scene.BIMProperties.data_dir, "libraries", template)
+        filepath = os.path.join(bpy.context.scene.BIMProperties.data_dir, "templates", "projects", template)
         bpy.ops.bim.select_library_file(filepath=filepath)
+        if IfcStore.library_file.schema != tool.Ifc.get().schema:
+            return
         for element in IfcStore.library_file.by_type("IfcTypeProduct"):
             bpy.ops.bim.append_library_element(definition=element.id())
 
@@ -39,10 +50,22 @@ class Project(blenderbim.core.tool.Project):
         return bpy.data.objects.new(name, None)
 
     @classmethod
+    def create_project_collections(cls):
+        tool.Loader.create_project_collection("Views")
+        tool.Loader.create_project_collection("Types")
+
+    @classmethod
     def load_default_thumbnails(cls):
         if tool.Ifc.get().by_type("IfcElementType"):
             ifc_class = sorted(tool.Ifc.get().by_type("IfcElementType"), key=lambda e: e.is_a())[0].is_a()
-            bpy.ops.bim.load_type_thumbnails(ifc_class=ifc_class)
+            bpy.ops.bim.load_type_thumbnails(ifc_class=ifc_class, offset=0, limit=9)
+
+    @classmethod
+    def load_pset_templates(cls):
+        pset_dir = tool.Ifc.resolve_uri(bpy.context.scene.BIMProperties.pset_dir)
+        if os.path.isdir(pset_dir):
+            for path in Path(pset_dir).glob("*.ifc"):
+                blenderbim.bim.schema.ifc.psetqto.templates.append(ifcopenshell.open(path))
 
     @classmethod
     def run_aggregate_assign_object(cls, relating_obj=None, related_obj=None):
@@ -79,13 +102,13 @@ class Project(blenderbim.core.tool.Project):
     @classmethod
     def run_root_assign_class(
         cls,
-        obj=None,
-        ifc_class=None,
-        predefined_type=None,
-        should_add_representation=True,
-        context=None,
-        ifc_representation_class=None,
-    ):
+        obj: bpy.types.Object,
+        ifc_class: str,
+        predefined_type: Optional[str] = None,
+        should_add_representation: bool = True,
+        context: Optional[ifcopenshell.entity_instance] = None,
+        ifc_representation_class: Optional[str] = None,
+    ) -> ifcopenshell.entity_instance:
         return blenderbim.core.root.assign_class(
             tool.Ifc,
             tool.Collector,
@@ -104,7 +127,7 @@ class Project(blenderbim.core.tool.Project):
 
     @classmethod
     def set_active_spatial_element(cls, obj):
-        collection = obj.users_collection[0]
+        collection = obj.BIMObjectProperties.collection
         queue = [bpy.context.view_layer.layer_collection]
         layer_collection = None
 
@@ -133,10 +156,10 @@ class Project(blenderbim.core.tool.Project):
     def set_default_modeling_dimensions(cls):
         props = bpy.context.scene.BIMModelProperties
         unit_scale = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
-        props.extrusion_depth = 3 / unit_scale
-        props.length = 1 / unit_scale
+        props.extrusion_depth = 3
+        props.length = 1
         props.rl1 = 0
-        props.rl2 = 1 / unit_scale
-        props.x = 0.5 / unit_scale
-        props.y = 0.5 / unit_scale
-        props.z = 0.5 / unit_scale
+        props.rl2 = 1
+        props.x = 0.5
+        props.y = 0.5
+        props.z = 0.5

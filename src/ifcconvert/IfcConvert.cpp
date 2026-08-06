@@ -34,10 +34,12 @@
 #include "../serializers/WavefrontObjSerializer.h"
 #include "../serializers/XmlSerializer.h"
 #include "../serializers/SvgSerializer.h"
+#include "../serializers/USDSerializer.h"
 
 #include "../ifcgeom_schema_agnostic/IfcGeomFilter.h"
 #include "../ifcgeom_schema_agnostic/IfcGeomIterator.h"
 #include "../ifcgeom_schema_agnostic/IfcGeomRenderStyles.h"
+#include "../ifcgeom_schema_agnostic/base_utils.h"
 
 #include "../ifcparse/utils.h"
 
@@ -101,6 +103,9 @@ void print_usage(bool suggest_help = true)
 #ifdef WITH_GLTF
 		<< "  .glb   glTF           Binary glTF v2.0\n"
 #endif
+#ifdef WITH_USD
+		<< "  .usd   USD            Universal Scene Description\n"
+#endif
         << "  .stp   STEP           Standard for the Exchange of Product Data\n"
         << "  .igs   IGES           Initial Graphics Exchange Specification\n"
         << "  .xml   XML            Property definitions and decomposition tree\n"
@@ -150,6 +155,7 @@ static std::basic_stringstream<path_t::value_type> log_stream;
 void write_log(bool);
 void fix_quantities(IfcParse::IfcFile&, bool, bool, bool);
 std::string format_duration(time_t start, time_t end);
+void remove_boundingboxes(IfcParse::IfcFile& f);
 
 /// @todo make the filters non-global
 IfcGeom::entity_filter entity_filter; // Entity filter is used always by default.
@@ -342,6 +348,9 @@ int main(int argc, char** argv) {
 			"Disables computation of normals. Saves time and file size and is useful "
 			"in instances where you're going to recompute normals for the exported "
 			"model in other modelling application in any case.")
+		("keep-bounding-boxes",
+			"Default is to removes IfcBoundingBox from model prior to converting geometry."
+			"Setting this option disables that behaviour")
 		("deflection-tolerance", po::value<double>(&deflection_tolerance)->default_value(1e-3),
 			"Sets the deflection tolerance of the mesher, 1e-3 by default if not specified.")
 		("force-space-transparency", po::value<double>(&force_space_transparency),
@@ -409,6 +418,10 @@ int main(int argc, char** argv) {
 			"Stores name and guid in a separate namespace as opposed to data-name, data-guid")
 		("svg-poly",
 			"Uses the polygonal algorithm for hidden line rendering")
+		("svg-prefilter",
+			"Prefilter faces and shapes before feeding to HLR algorithm")
+		("svg-segment-projection",
+			"Segment result of projection wrt original products")
 		("svg-write-poly",
 			"Approximate every curve as polygonal in SVG output")
 		("svg-project",
@@ -452,6 +465,7 @@ int main(int argc, char** argv) {
 		("space-name-transform", po::value<std::string>(),
 			"Additional transform to the space labels in SVG")
 		("edge-arrows", "Adds arrow heads to edge segments to signify edge direction")
+		("ecef", "Write glTF in Earth-Centered Earth-Fixed coordinates. Requires PROJ")
 		;
 
     po::options_description cmdline_options;
@@ -518,6 +532,7 @@ int main(int argc, char** argv) {
 	const bool generate_uvs = vmap.count("generate-uvs") != 0;
 	const bool validate = vmap.count("validate") != 0;
 	const bool edge_arrows = vmap.count("edge-arrows") != 0;
+	const bool write_gltf_ecef = vmap.count("ecef") != 0;
 	const bool no_wire_intersection_check = vmap.count("no-wire-intersection-check") != 0;
 	const bool no_wire_intersection_tolerance = vmap.count("no-wire-intersection-tolerance") != 0;
 	const bool strict_tolerance = vmap.count("strict-tolerance") != 0;
@@ -706,7 +721,10 @@ int main(int argc, char** argv) {
 		CACHE = IfcUtil::path::from_utf8(".cache"),
 		HDF = IfcUtil::path::from_utf8(".h5"),
 		XML = IfcUtil::path::from_utf8(".xml"),
-		IFC = IfcUtil::path::from_utf8(".ifc");
+		IFC = IfcUtil::path::from_utf8(".ifc"),
+		USD = IfcUtil::path::from_utf8(".usd"),
+		USDA = IfcUtil::path::from_utf8(".usda"),
+		USDC = IfcUtil::path::from_utf8(".usdc");
 
 	// @todo clean up serializer selection
 	// @todo detect program options that conflict with the chosen serializer
@@ -828,7 +846,8 @@ int main(int argc, char** argv) {
 	settings.set(SerializerSettings::USE_MATERIAL_NAMES, use_material_names);
 	settings.set(SerializerSettings::USE_ELEMENT_TYPES, use_element_types);
 	settings.set(SerializerSettings::USE_ELEMENT_HIERARCHY, use_element_hierarchy);
-    settings.set_deflection_tolerance(deflection_tolerance);
+	settings.set(SerializerSettings::WRITE_GLTF_ECEF, write_gltf_ecef);
+	settings.set_deflection_tolerance(deflection_tolerance);
 	settings.set_angular_tolerance(angular_tolerance);
 	settings.precision = precision;
 
@@ -849,6 +868,10 @@ int main(int argc, char** argv) {
 #ifdef WITH_GLTF
 	} else if (output_extension == GLB) {
 		serializer = boost::make_shared<GltfSerializer>(IfcUtil::path::to_utf8(output_temp_filename), settings);
+#endif
+#ifdef WITH_USD
+	} else if (output_extension == USD || output_extension == USDA || output_extension == USDC) {
+		serializer = boost::make_shared<USDSerializer>(IfcUtil::path::to_utf8(output_filename), settings);
 #endif
 	} else if (output_extension == STP) {
 		serializer = boost::make_shared<StepSerializer>(IfcUtil::path::to_utf8(output_temp_filename), settings);
@@ -990,6 +1013,10 @@ int main(int argc, char** argv) {
         Logger::Notice(msg.str());
     }
 
+	if (!vmap.count("keep-bounding-boxes")) {
+		remove_boundingboxes(*ifc_file);
+	}
+
 	IfcGeom::Iterator context_iterator(settings, ifc_file, filter_funcs, num_threads);
 
 #ifdef WITH_HDF5
@@ -1070,6 +1097,8 @@ int main(int argc, char** argv) {
 		}
 		static_cast<SvgSerializer*>(serializer.get())->setUseNamespace(vmap.count("svg-xmlns") > 0);
 		static_cast<SvgSerializer*>(serializer.get())->setUseHlrPoly(vmap.count("svg-poly") > 0);
+		static_cast<SvgSerializer*>(serializer.get())->setUsePrefiltering(vmap.count("svg-prefilter") > 0);
+		static_cast<SvgSerializer*>(serializer.get())->setSegmentProjection(vmap.count("svg-segment-projection") > 0);
 		static_cast<SvgSerializer*>(serializer.get())->setPolygonal(vmap.count("svg-write-poly") > 0);
 		static_cast<SvgSerializer*>(serializer.get())->setAlwaysProject(vmap.count("svg-project") > 0);
 		static_cast<SvgSerializer*>(serializer.get())->setWithoutStoreys(vmap.count("svg-without-storeys") > 0);
@@ -1172,9 +1201,17 @@ int main(int argc, char** argv) {
 
 	Logger::Message(Logger::LOG_PERF, "done file geometry conversion");
 
-    // Renaming might fail (e.g. maybe the existing file was open in a viewer application)
-    // Do not remove the temp file as user can salvage the conversion result from it.
-    bool successful = IfcUtil::path::rename_file(IfcUtil::path::to_utf8(output_temp_filename), IfcUtil::path::to_utf8(output_filename));
+	bool successful;
+	if(output_extension == USD || output_extension == USDC || output_extension == USDA) {
+		// No need to rename the file
+		successful = true;
+	}
+	else {
+		// Renaming might fail (e.g. maybe the existing file was open in a viewer application)
+    	// Do not remove the temp file as user can salvage the conversion result from it.
+		successful = IfcUtil::path::rename_file(IfcUtil::path::to_utf8(output_temp_filename), IfcUtil::path::to_utf8(output_filename));
+	}
+
     if (!successful) {
         cerr_ << "Unable to write output file '" << output_filename << "', see '" <<
             output_temp_filename << "' for the conversion result.";
@@ -1483,6 +1520,64 @@ namespace latebound_access {
 	}
 }
 
+void remove_boundingboxes(IfcParse::IfcFile& f) {
+	auto delete_reversed = [&f](const aggregate_of_instance::ptr& insts) {
+		if (!insts) {
+			return;
+		}
+		// Lists are traversed back to front as the list may be mutated when
+		// instances are removed from the grouping by type.
+		for (auto it = insts->end() - 1; it >= insts->begin(); --it) {
+			IfcUtil::IfcBaseClass* const inst = *it;
+			f.removeEntity(inst);
+		}
+	};
+
+	auto boxes = f.instances_by_type("IfcBoundingBox");
+	// This is a set, because a box could be referenced by multiple representations.
+	std::set<IfcUtil::IfcBaseClass*> reps_collected;
+
+	// First iterate over the boxes and find representations referencing such boxes.
+	if (boxes) {
+		for (auto& b : *boxes) {
+			auto reps = f.getInverse(
+				b->data().id(),
+				f.schema()->declaration_by_name("IfcRepresentation"),
+				-1
+			);
+			if (reps) {
+				for (auto& r : *reps) {
+					reps_collected.insert(r);
+				}
+			}
+		}
+	}
+
+	// With the representations stored, we can now delete the boxes.
+	delete_reversed(boxes);
+
+	for (auto& r_ : reps_collected) {
+		auto r = r_->as<IfcUtil::IfcBaseEntity>();
+		auto items_val = r->get("Items");
+		bool to_remove = true;
+		if (!items_val->isNull()) {
+			try {
+				aggregate_of_instance::ptr items = *items_val;
+				// Representation.Items will have been updated with the box
+				// removal, setting the number of items to zero in case the
+				// representation consisted only of boxes in which case the
+				// representation itself should also be deleted to prevent
+				// error messages.
+				to_remove = items->size() == 0;
+			} catch (IfcParse::IfcException&) {
+			}
+		}
+		if (to_remove) {
+			f.removeEntity(r);
+		}
+	}
+}
+
 void fix_quantities(IfcParse::IfcFile& f, bool no_progress, bool quiet, bool stderr_progress) {
 	{
 		auto delete_reversed = [&f](const aggregate_of_instance::ptr& insts) {
@@ -1632,7 +1727,7 @@ void fix_quantities(IfcParse::IfcFile& f, bool no_progress, bool quiet, bool std
 				auto quantity_count = latebound_access::create(f, "IfcQuantityCount");
 				latebound_access::set(quantity_count, "Name", std::string("Surface Genus"));
 				latebound_access::set(quantity_count, "Description", '#' + boost::lexical_cast<std::string>(part.ItemId()));
-				latebound_access::set(quantity_count, "CountValue", IfcGeom::Kernel::surface_genus(part.Shape()));
+				latebound_access::set(quantity_count, "CountValue", IfcGeom::util::surface_genus(part.Shape()));
 
 				quantities_2->push(quantity_count);				
 			}

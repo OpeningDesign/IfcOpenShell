@@ -16,8 +16,19 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
 
+import numpy as np
+import numpy.typing as npt
+import ifcopenshell
+import ifcopenshell.util.placement
+from typing import Optional, Union, TypedDict
 
-def get_context(ifc_file, context, subcontext=None, target_view=None):
+
+def get_context(
+    ifc_file: ifcopenshell.file,
+    context: str,
+    subcontext: Optional[str] = None,
+    target_view: Optional[str] = None,
+) -> Union[ifcopenshell.entity_instance, None]:
     if subcontext or target_view:
         elements = ifc_file.by_type("IfcGeometricRepresentationSubContext")
     else:
@@ -32,7 +43,15 @@ def get_context(ifc_file, context, subcontext=None, target_view=None):
         return element
 
 
-def is_representation_of_context(representation, context, subcontext=None, target_view=None):
+def is_representation_of_context(
+    representation: ifcopenshell.entity_instance,
+    context: Union[ifcopenshell.entity_instance, str],
+    subcontext: Optional[str] = None,
+    target_view: Optional[str] = None,
+) -> bool:
+    if isinstance(context, ifcopenshell.entity_instance):
+        return representation.ContextOfItems == context
+
     if target_view is not None:
         return (
             representation.ContextOfItems.is_a("IfcGeometricRepresentationSubContext")
@@ -46,11 +65,16 @@ def is_representation_of_context(representation, context, subcontext=None, targe
             and representation.ContextOfItems.ContextIdentifier == subcontext
             and representation.ContextOfItems.ContextType == context
         )
-    elif representation.ContextOfItems.ContextType == context:
-        return True
+
+    return representation.ContextOfItems.ContextType == context
 
 
-def get_representation(element, context, subcontext=None, target_view=None):
+def get_representation(
+    element: ifcopenshell.entity_instance,
+    context: Union[ifcopenshell.entity_instance, str],
+    subcontext: Optional[str] = None,
+    target_view: Optional[str] = None,
+) -> Union[ifcopenshell.entity_instance, None]:
     if element.is_a("IfcProduct") and element.Representation:
         for r in element.Representation.Representations:
             if is_representation_of_context(r, context, subcontext, target_view):
@@ -59,3 +83,38 @@ def get_representation(element, context, subcontext=None, target_view=None):
         for r in element.RepresentationMaps:
             if is_representation_of_context(r.MappedRepresentation, context, subcontext, target_view):
                 return r.MappedRepresentation
+
+
+def resolve_representation(representation: ifcopenshell.entity_instance) -> ifcopenshell.entity_instance:
+    """Resolve possibly mapped representation.
+
+    :param representation: IfcRepresentation
+    :type representation: ifcopenshell.entity_instance
+    :return: Representation resolved from mappings
+    :rtype: ifcopenshell.entity_instance
+    """
+    if len(representation.Items) == 1 and representation.Items[0].is_a("IfcMappedItem"):
+        return resolve_representation(representation.Items[0].MappingSource.MappedRepresentation)
+    return representation
+
+
+class ResolvedItemDict(TypedDict):
+    matrix: npt.NDArray[np.float64]
+    item: ifcopenshell.entity_instance
+
+
+def resolve_items(
+    representation: ifcopenshell.entity_instance, matrix: Optional[npt.NDArray[np.float64]] = None
+) -> list[ResolvedItemDict]:
+    if matrix is None:
+        matrix = np.eye(4)
+    results: list[ResolvedItemDict] = []
+    for item in representation.Items or []:  # Be forgiving of invalid IFCs because Revit :(
+        if item.is_a("IfcMappedItem"):
+            rep_matrix = ifcopenshell.util.placement.get_mappeditem_transformation(item)
+            if not np.allclose(rep_matrix, np.eye(4)):
+                rep_matrix = rep_matrix @ matrix.copy()
+            results.extend(resolve_items(item.MappingSource.MappedRepresentation, rep_matrix))
+        else:
+            results.append(ResolvedItemDict(matrix=matrix.copy(), item=item))
+    return results

@@ -18,40 +18,104 @@
 
 import ifcopenshell
 import ifcopenshell.api
+import ifcopenshell.guid
+import ifcopenshell.util.element
+from typing import Union
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {
-            "product": None,
-            "relating_structure": None,
-        }
-        for key, value in settings.items():
-            self.settings[key] = value
+def reference_structure(
+    file: ifcopenshell.file,
+    products: list[ifcopenshell.entity_instance],
+    relating_structure: ifcopenshell.entity_instance,
+) -> Union[ifcopenshell.entity_instance, None]:
+    """Denote that a list products is related to a list of spatial structures
 
-    def execute(self):
-        referenced_in_structures = self.settings["product"].ReferencedInStructures
-        references_elements = self.settings["relating_structure"].ReferencesElements
+    This is similar to ifcopenshell.api.spatial.assign_container, except
+    that containment can only occur between a product and a single spatial
+    structure element. This is fine if a wall is on level 1, but not
+    appropriate if you have a multistorey column on multiple levels, or a
+    door with a to and from space, or a stair going from one floor to
+    another floor. This is where spatial referencing is used.
 
-        for rel in referenced_in_structures:
-            if rel.RelatingStructure == self.settings["relating_structure"]:
-                return
+    Typically, the product will be contained in the lowermost, constructed
+    first, or primarily accessible space. For a multistorey column or stair,
+    the column or stair will therefore be contained in the lowermost storey.
+    Then, any other storeys will be referenced.
 
-        if references_elements:
-            related_elements = list(references_elements[0].RelatedElements)
-            related_elements.append(self.settings["product"])
-            references_elements[0].RelatedElements = related_elements
-            ifcopenshell.api.run("owner.update_owner_history", self.file, **{"element": references_elements[0]})
-        else:
-            references_elements = self.file.create_entity(
-                "IfcRelReferencedInSpatialStructure",
-                **{
-                    "GlobalId": ifcopenshell.guid.new(),
-                    "OwnerHistory": ifcopenshell.api.run("owner.create_owner_history", self.file),
-                    "RelatedElements": [self.settings["product"]],
-                    "RelatingStructure": self.settings["relating_structure"],
-                }
-            )
+    Referencing is non-hierarchical, so a door may be referenced in multiple
+    spaces simultaneously.
 
-        return references_elements
+    :param products: The list of physical IfcElements that exists in the space.
+    :type products: list[ifcopenshell.entity_instance]
+    :param relating_structure: The IfcSpatialStructureElement element, such
+        as IfcBuilding, IfcBuildingStorey, or IfcSpace that the element
+        exists in.
+    :type relating_structure: ifcopenshell.entity_instance
+    :return: The IfcRelReferencedInSpatialStructure relationship instance
+        or `None` if `products` was an empty list.
+    :rtype: Union[ifcopenshell.entity_instance, None]
+
+    Example:
+
+    .. code:: python
+
+        project = ifcopenshell.api.run("root.create_entity", model, ifc_class="IfcProject")
+        site = ifcopenshell.api.run("root.create_entity", model, ifc_class="IfcSite")
+        building = ifcopenshell.api.run("root.create_entity", model, ifc_class="IfcBuilding")
+        storey1 = ifcopenshell.api.run("root.create_entity", model, ifc_class="IfcBuildingStorey")
+        storey2 = ifcopenshell.api.run("root.create_entity", model, ifc_class="IfcBuildingStorey")
+        storey3 = ifcopenshell.api.run("root.create_entity", model, ifc_class="IfcBuildingStorey")
+
+        # The project contains a site (note that project aggregation is a special case in IFC)
+        ifcopenshell.api.run("aggregate.assign_object", model, products=[site], relating_object=project)
+
+        # The site has a building, the building has a storey, and the storey has a space
+        ifcopenshell.api.run("aggregate.assign_object", model, products=[building], relating_object=site)
+        ifcopenshell.api.run("aggregate.assign_object", model, products=[storey], relating_object=building)
+        ifcopenshell.api.run("aggregate.assign_object", model, products=[space], relating_object=storey)
+
+        # Create a column, this column spans 3 storeys
+        column = ifcopenshell.api.run("root.create_entity", model, ifc_class="IfcWall")
+
+        # The column is contained in the lowermost storey
+        ifcopenshell.api.run("spatial.assign_container", model, products=[column], relating_structure=storey1)
+
+        # And referenced in the others
+        ifcopenshell.api.run(
+            "spatial.reference_structure", model, products=[column], relating_structure=[storey2, storey3]
+        )
+    """
+    settings = {
+        "products": products,
+        "relating_structure": relating_structure,
+    }
+
+    structure = settings["relating_structure"]
+    products = set(settings["products"])
+
+    if not products:
+        return
+
+    referenced = ifcopenshell.util.element.get_structure_referenced_elements(structure)
+    products_to_assign = products - referenced
+    rel = next(iter(structure.ReferencesElements), None)
+
+    if not products_to_assign:
+        return rel
+
+    if rel is None:
+        rel = file.create_entity(
+            "IfcRelReferencedInSpatialStructure",
+            **{
+                "GlobalId": ifcopenshell.guid.new(),
+                "OwnerHistory": ifcopenshell.api.run("owner.create_owner_history", file),
+                "RelatedElements": list(products_to_assign),
+                "RelatingStructure": structure,
+            }
+        )
+    else:
+        related_elements = set(rel.RelatedElements) | products_to_assign
+        rel.RelatedElements = list(related_elements)
+        ifcopenshell.api.run("owner.update_owner_history", file, **{"element": rel})
+
+    return rel

@@ -31,14 +31,19 @@ class TestImplementsTool(NewFile):
 
 class TestAddDefaultMaterialObject(NewFile):
     def test_run(self):
-        material = subject.add_default_material_object()
+        material = subject.add_default_material_object(None)
         assert isinstance(material, bpy.types.Material)
         assert material.name == "Default"
+
+    def test_specify_a_name(self):
+        material = subject.add_default_material_object("Material")
+        assert isinstance(material, bpy.types.Material)
+        assert material.name == "Material"
 
 
 class TestDeleteObject(NewFile):
     def test_run(self):
-        material = subject.add_default_material_object()
+        material = subject.add_default_material_object(None)
         assert bpy.data.materials.get("Default")
         subject.delete_object(material)
         assert not bpy.data.materials.get("Default")
@@ -74,7 +79,7 @@ class TestGetElementsByMaterial(NewFile):
         tool.Ifc.set(ifc)
         element = ifcopenshell.api.run("root.create_entity", ifc, ifc_class="IfcWall")
         material = ifcopenshell.api.run("material.add_material", ifc)
-        ifcopenshell.api.run("material.assign_material", ifc, product=element, material=material)
+        ifcopenshell.api.run("material.assign_material", ifc, products=[element], material=material)
         assert subject.get_elements_by_material(material) == {element}
 
 
@@ -153,18 +158,20 @@ class TestImportMaterialDefinitions(NewFile):
 class TestIsEditingMaterials(NewFile):
     def test_run(self):
         bpy.context.scene.BIMMaterialProperties.is_editing = False
-        subject.is_editing_materials() is False
+        assert subject.is_editing_materials() is False
         bpy.context.scene.BIMMaterialProperties.is_editing = True
-        subject.is_editing_materials() is True
+        assert subject.is_editing_materials() is True
 
 
-class TestSelectElements(NewFile):
+class TestIsMaterialUsedInSets(NewFile):
     def test_run(self):
         ifc = ifcopenshell.file()
-        tool.Ifc().set(ifc)
-        element = ifcopenshell.api.run("root.create_entity", ifc, ifc_class="IfcPump")
-        obj = bpy.data.objects.new("Object", None)
-        bpy.context.scene.collection.objects.link(obj)
-        tool.Ifc.link(element, obj)
-        subject.select_elements([element])
-        assert obj in bpy.context.selected_objects
+        tool.Ifc.set(ifc)
+        material_set = ifc.createIfcMaterialLayerSet()
+        material_set_item = ifc.createIfcMaterialLayer()
+        material = ifc.createIfcMaterial()
+        assert subject.is_material_used_in_sets(material) is False
+        material_set.MaterialLayers = [material_set_item]
+        material_set_item.Material = material
+        assert subject.is_material_used_in_sets(material) is True
+

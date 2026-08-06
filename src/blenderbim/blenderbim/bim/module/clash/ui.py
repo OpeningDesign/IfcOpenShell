@@ -17,19 +17,24 @@
 # along with BlenderBIM Add-on.  If not, see <http://www.gnu.org/licenses/>.
 
 import bpy
+import blenderbim.bim.helper
 from bpy.types import Panel
+from blenderbim.bim.module.clash.data import ClashData
 
 
 class BIM_PT_ifcclash(Panel):
-    bl_label = "IFC Clash Sets"
+    bl_label = "Clash Sets"
     bl_idname = "BIM_PT_ifcclash"
     bl_options = {"DEFAULT_CLOSED"}
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "scene"
-    bl_parent_id = "BIM_PT_quality_control"
+    bl_parent_id = "BIM_PT_tab_clash_detection"
 
     def draw(self, context):
+        if not ClashData.is_loaded:
+            ClashData.load()
+
         layout = self.layout
 
         scene = context.scene
@@ -45,66 +50,106 @@ class BIM_PT_ifcclash(Panel):
 
         layout.template_list("BIM_UL_clash_sets", "", props, "clash_sets", props, "active_clash_set_index")
 
-        if props.active_clash_set_index < len(props.clash_sets):
-            clash_set = props.active_clash_set
+        if not props.active_clash_set:
+            return
 
-            row = layout.row(align=True)
-            row.prop(clash_set, "name")
-            row.operator("bim.remove_clash_set", icon="X", text="").index = props.active_clash_set_index
+        clash_set = props.active_clash_set
 
-            row = layout.row(align=True)
+        row = layout.row(align=True)
+        row.prop(clash_set, "name")
+        row.operator("bim.remove_clash_set", icon="X", text="").index = props.active_clash_set_index
+
+        row = layout.row()
+        row.prop(clash_set, "mode")
+
+        if clash_set.mode == "intersection":
+            row = layout.row()
             row.prop(clash_set, "tolerance")
-
-            layout.label(text="Group A:")
             row = layout.row()
-            row.operator("bim.add_clash_source").group = "a"
-
-            for index, source in enumerate(clash_set.a):
-                row = layout.row(align=True)
-                row.prop(source, "name", text="")
-                op = row.operator("bim.select_clash_source", icon="FILE_FOLDER", text="")
-                op.index = index
-                op.group = "a"
-                op = row.operator("bim.remove_clash_source", icon="X", text="")
-                op.index = index
-                op.group = "a"
-
-                row = layout.row(align=True)
-                row.prop(source, "mode", text="")
-                row.prop(source, "selector", text="")
-
-            layout.label(text="Group B:")
+            row.prop(clash_set, "check_all")
+        elif clash_set.mode == "collision":
             row = layout.row()
-            row.operator("bim.add_clash_source").group = "b"
-
-            for index, source in enumerate(clash_set.b):
-                row = layout.row(align=True)
-                row.prop(source, "name", text="")
-                op = row.operator("bim.select_clash_source", icon="FILE_FOLDER", text="")
-                op.index = index
-                op.group = "b"
-                op = row.operator("bim.remove_clash_source", icon="X", text="")
-                op.index = index
-                op.group = "b"
-
-                row = layout.row(align=True)
-                row.prop(source, "mode", text="")
-                row.prop(source, "selector", text="")
-
+            row.prop(clash_set, "allow_touching")
+        elif clash_set.mode == "clearance":
             row = layout.row()
-            row.prop(props, "should_create_clash_snapshots")
+            row.prop(clash_set, "clearance")
+            row = layout.row()
+            row.prop(clash_set, "check_all")
+
+        row = layout.row(align=True)
+        row.label(text="Group A:", icon="OUTLINER_OB_POINTCLOUD")
+        row.operator("bim.add_clash_source", icon="ADD", text="").group = "a"
+
+        for index, source in enumerate(clash_set.a):
             row = layout.row(align=True)
-            row.operator("bim.execute_ifc_clash")
-            row.operator("bim.select_ifc_clash_results")
+            row.prop(source, "name", text="")
+            row.prop(source, "mode", text="")
+            op = row.operator("bim.select_clash_source", icon="FILE_FOLDER", text="")
+            op.index = index
+            op.group = "a"
+            op = row.operator("bim.remove_clash_source", icon="X", text="")
+            op.index = index
+            op.group = "a"
+
+            if source.mode != "a":
+                blenderbim.bim.helper.draw_filter(
+                    layout, source.filter_groups, ClashData, f"clash_{props.active_clash_set_index}_a_{index}"
+                )
+
+        row = layout.row(align=True)
+        row.label(text="Group B:", icon="OUTLINER_OB_POINTCLOUD")
+        row.operator("bim.add_clash_source", icon="ADD", text="").group = "b"
+
+        for index, source in enumerate(clash_set.b):
+            row = layout.row(align=True)
+            row.prop(source, "name", text="")
+            row.prop(source, "mode", text="")
+            op = row.operator("bim.select_clash_source", icon="FILE_FOLDER", text="")
+            op.index = index
+            op.group = "b"
+            op = row.operator("bim.remove_clash_source", icon="X", text="")
+            op.index = index
+            op.group = "b"
+
+            if source.mode != "a":
+                blenderbim.bim.helper.draw_filter(
+                    layout, source.filter_groups, ClashData, f"clash_{props.active_clash_set_index}_b_{index}"
+                )
+
+        row = layout.row()
+        row.prop(props, "should_create_clash_snapshots")
+        row = layout.row()
+        row.operator("bim.execute_ifc_clash")
+
+        row = layout.row()
+        row.label(text=f"{len(clash_set.clashes)} Clashes Found", icon="PIVOT_CURSOR")
+
+        layout.template_list("BIM_UL_clashes", "", props.active_clash_set, "clashes", props, "active_clash_index")
+        row = layout.row()
+        row.operator("bim.select_clash")
 
 
 class BIM_PT_clash_manager(Panel):
     bl_idname = "BIM_PT_clash_manager"
     bl_label = "Clash Manager"
     bl_options = {"DEFAULT_CLOSED"}
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "BlenderBIM"
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "scene"
+    bl_parent_id = "BIM_PT_tab_clash_detection"
+
+    def draw(self, context):
+        pass
+
+
+class BIM_PT_smart_clash_manager(Panel):
+    bl_idname = "BIM_PT_smart_clash_manager"
+    bl_label = "Smart Clash Manager"
+    bl_options = {"DEFAULT_CLOSED"}
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "scene"
+    bl_parent_id = "BIM_PT_clash_manager"
 
     def draw(self, context):
         layout = self.layout
@@ -153,5 +198,16 @@ class BIM_UL_smart_groups(bpy.types.UIList):
         ob = data
         if item:
             layout.label(text=str(item.number), translate=False, icon="NONE", icon_value=0)
+        else:
+            layout.label(text="", translate=False)
+
+
+class BIM_UL_clashes(bpy.types.UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname):
+        if item:
+            row = layout.row(align=True)
+            row.label(text=str(item.a_name), translate=False, icon="NONE", icon_value=0)
+            row.label(text=str(item.b_name), translate=False, icon="NONE", icon_value=0)
+            row.prop(item, "status", text="")
         else:
             layout.label(text="", translate=False)

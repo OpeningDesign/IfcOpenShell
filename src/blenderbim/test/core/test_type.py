@@ -22,7 +22,7 @@ from test.core.bootstrap import ifc, type
 
 class TestAssignType:
     def test_assigning_and_switching_to_an_existing_type_data(self, ifc, type):
-        ifc.run("type.assign_type", related_object="element", relating_type="type").should_be_called()
+        ifc.run("type.assign_type", related_objects=["element"], relating_type="type").should_be_called()
         type.has_material_usage("element").should_be_called().will_return(False)
         ifc.get_object("type").should_be_called().will_return("type_obj")
         type.get_object_data("type_obj").should_be_called().will_return("type_obj_data")
@@ -32,10 +32,21 @@ class TestAssignType:
         subject.assign_type(ifc, type, element="element", type="type")
 
     def test_assigning_and_not_changing_data_if_the_type_has_no_data(self, ifc, type):
-        ifc.run("type.assign_type", related_object="element", relating_type="type").should_be_called()
+        ifc.run("type.assign_type", related_objects=["element"], relating_type="type").should_be_called()
         type.has_material_usage("element").should_be_called().will_return(False)
         ifc.get_object("type").should_be_called().will_return("type_obj")
         type.get_object_data("type_obj").should_be_called().will_return(None)
         ifc.get_object("element").should_be_called().will_return("obj")
         type.disable_editing("obj").should_be_called()
         subject.assign_type(ifc, type, element="element", type="type")
+
+
+class TestPurgeUnusedTypes:
+    def test_run(self, ifc, type):
+        type.get_model_types().should_be_called().will_return(["element_type"])
+        type.get_type_occurrences("element_type").should_be_called().will_return([])
+        ifc.run("root.remove_product", product="element_type").should_be_called()
+        ifc.get_object("element_type").should_be_called().will_return("obj")
+        ifc.unlink(obj="obj").should_be_called()
+        type.remove_object("obj").should_be_called()
+        subject.purge_unused_types(ifc, type)

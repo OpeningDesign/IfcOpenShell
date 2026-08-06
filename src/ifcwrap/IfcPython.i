@@ -113,6 +113,16 @@
 #ifdef HAS_SCHEMA_4x3
 #include "../ifcparse/Ifc4x3.h"
 #endif
+#ifdef HAS_SCHEMA_4x3_tc1
+#include "../ifcparse/Ifc4x3_tc1.h"
+#endif
+#ifdef HAS_SCHEMA_4x3_add1
+#include "../ifcparse/Ifc4x3_add1.h"
+#endif
+#ifdef HAS_SCHEMA_4x3_add2
+#include "../ifcparse/Ifc4x3_add2.h"
+#endif
+
 
 	#include "../ifcparse/IfcBaseClass.h"
 	#include "../ifcparse/IfcFile.h"
@@ -171,6 +181,15 @@
 #ifdef HAS_SCHEMA_4x3
 	#include "../ifcparse/Ifc4x3.h"
 #endif
+#ifdef HAS_SCHEMA_4x3_tc1
+	#include "../ifcparse/Ifc4x3_tc1.h"
+#endif
+#ifdef HAS_SCHEMA_4x3_add1
+	#include "../ifcparse/Ifc4x3_add1.h"
+#endif
+#ifdef HAS_SCHEMA_4x3_add2
+	#include "../ifcparse/Ifc4x3_add2.h"
+#endif
 
 	#include "../ifcparse/IfcBaseClass.h"
 	#include "../ifcparse/IfcFile.h"
@@ -184,7 +203,14 @@
 
 %include "IfcGeomWrapper.i"
 %include "IfcParseWrapper.i"
+%include "std_vector.i"
 	
 namespace std {
   %template(float_array_3) array<double, 3>;
+  %template(FloatVector) vector<float>;
+  %template(IntVector) std::vector<int>;
+  %template(DoubleVector) std::vector<double>;
+  %template(StringVector) std::vector<std::string>;
+  %template(FloatVectorVector) std::vector<std::vector<float>>;
+  %template(DoubleVectorVector) std::vector<std::vector<double>>;
 }

@@ -22,11 +22,21 @@ import ifcopenshell.api
 import ifcopenshell.util.system as subject
 
 
+class TestIsAssignable(test.bootstrap.IFC4):
+    def test_run(self):
+        project = self.file.createIfcProject()
+        system = self.file.createIfcSystem()
+        pump = self.file.createIfcPump()
+        assert subject.is_assignable(pump, system)
+        assert not subject.is_assignable(project, system)
+        assert not subject.is_assignable(pump, project)
+
+
 class TestGetSystemElements(test.bootstrap.IFC4):
     def test_run(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcPump")
         system = ifcopenshell.api.run("system.add_system", self.file, ifc_class="IfcSystem")
-        ifcopenshell.api.run("system.assign_system", self.file, product=element, system=system)
+        ifcopenshell.api.run("system.assign_system", self.file, products=[element], system=system)
         assert subject.get_system_elements(system) == [element]
 
 
@@ -34,33 +44,38 @@ class TestGetElementSystems(test.bootstrap.IFC4):
     def test_run(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcPump")
         system = ifcopenshell.api.run("system.add_system", self.file, ifc_class="IfcSystem")
-        ifcopenshell.api.run("system.assign_system", self.file, product=element, system=system)
+        ifcopenshell.api.run("system.assign_system", self.file, products=[element], system=system)
         assert subject.get_element_systems(element) == [system]
 
     def test_do_not_get_non_services_groups(self):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcPump")
-        ifcopenshell.api.run("system.assign_system", self.file, product=element, system=self.file.createIfcGroup())
-        ifcopenshell.api.run("system.assign_system", self.file, product=element, system=self.file.createIfcZone())
         ifcopenshell.api.run(
-            "system.assign_system", self.file, product=element, system=self.file.createIfcStructuralAnalysisModel()
+            "system.assign_system",
+            self.file,
+            products=[element],
+            system=self.file.createIfcGroup(),
         )
+        for not_assignable_system_class in ("IfcZone", "IfcStructuralAnalysisModel"):
+            with pytest.raises(TypeError):
+                ifcopenshell.api.run(
+                    "system.assign_system",
+                    self.file,
+                    products=[element],
+                    system=self.file.create_entity(not_assignable_system_class),
+                )
         assert not subject.get_element_systems(element)
 
 
 class TestGetPorts(test.bootstrap.IFC4):
     def test_run(self):
         port = self.file.createIfcDistributionPort()
-        element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcChiller")
-        ifcopenshell.api.run("system.assign_port", self.file, element=element, port=port)
-        assert subject.get_ports(element) == [port]
-
-
-class TestGetPortsIFC2X3(test.bootstrap.IFC2X3):
-    def test_run(self):
-        port = self.file.createIfcDistributionPort()
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcFlowSegment")
         ifcopenshell.api.run("system.assign_port", self.file, element=element, port=port)
         assert subject.get_ports(element) == [port]
+
+
+class TestGetPortsIFC2X3(test.bootstrap.IFC2X3, TestGetPorts):
+    pass
 
 
 class TestGetConnectedPort(test.bootstrap.IFC4):
@@ -70,3 +85,30 @@ class TestGetConnectedPort(test.bootstrap.IFC4):
         ifcopenshell.api.run("system.connect_port", self.file, port1=port1, port2=port2)
         assert subject.get_connected_port(port1) == port2
         assert subject.get_connected_port(port2) == port1
+
+
+class TestGetConnectedToFrom(test.bootstrap.IFC4):
+    def test_run(self):
+        port1 = ifcopenshell.api.run("system.add_port", self.file)
+        element1 = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcFlowSegment")
+        ifcopenshell.api.run("system.assign_port", self.file, element=element1, port=port1)
+
+        port2 = ifcopenshell.api.run("system.add_port", self.file)
+        element2 = ifcopenshell.api.run("root.create_entity", self.file, ifc_class="IfcFlowSegment")
+        ifcopenshell.api.run("system.assign_port", self.file, element=element2, port=port2)
+
+        ifcopenshell.api.run("system.connect_port", self.file, port1=port1, port2=port2, direction="SOURCE")
+        assert subject.get_connected_to(element1) == [element2]
+        assert subject.get_connected_from(element1) == []
+        assert subject.get_connected_to(element2) == []
+        assert subject.get_connected_from(element2) == [element1]
+
+        ifcopenshell.api.run("system.connect_port", self.file, port1=port1, port2=port2, direction="SINK")
+        assert subject.get_connected_to(element1) == []
+        assert subject.get_connected_from(element1) == [element2]
+        assert subject.get_connected_to(element2) == [element1]
+        assert subject.get_connected_from(element2) == []
+
+
+class TestGetConnectedToFromIFC2X3(test.bootstrap.IFC2X3, TestGetConnectedToFrom):
+    pass

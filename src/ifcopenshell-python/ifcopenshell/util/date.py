@@ -18,11 +18,13 @@
 
 import datetime
 from re import findall
+from dateutil import parser
+from typing import Literal, Union, Any, overload
 
 try:
     import isodate
-except:
-    pass  # Duration parsing not supported
+except ModuleNotFoundError as e:
+    print(f"Note: duration parsing not available due to missing dependencies: util.date - {e}")
 
 
 def timedelta2duration(timedelta):
@@ -41,7 +43,7 @@ def timedelta2duration(timedelta):
 
 def ifc2datetime(element):
     if isinstance(element, str) and "P" in element[0:2]:  # IfcDuration
-        duration = isodate.parse_duration(element)
+        duration = parse_duration(element)
         if isinstance(duration, datetime.timedelta):
             return timedelta2duration(duration)
         return duration
@@ -71,11 +73,74 @@ def ifc2datetime(element):
         )
 
 
-def datetime2ifc(dt, ifc_type):
+def get_isosplit(s, split):
+    if split in s:
+        n, s = s.split(split)
+    else:
+        n = 0
+    return n, s
+
+
+def readable_ifc_duration(string):
+    string = string.split("P")[-1]
+
+    years, string = get_isosplit(string, "Y")
+    months, string = get_isosplit(string, "M")
+    weeks, string = get_isosplit(string, "W")
+    days, string = get_isosplit(string, "D")
+    _, string = get_isosplit(string, "T")
+    hours, string = get_isosplit(string, "H")
+    minutes, string = get_isosplit(string, "M")
+    seconds, string = get_isosplit(string, "S")
+
+    final_string = ""
+    final_string += f"{years} y " if years else ""
+    final_string += f"{months} m " if months else ""
+    final_string += f"{weeks} w " if weeks else ""
+    final_string += f"{days} d " if days else ""
+    final_string += f"{round(float(hours),2)} h " if hours else ""
+    final_string += f"{minutes} m " if minutes else ""
+    final_string += f"{seconds} s " if seconds else ""
+
+    return final_string
+
+
+@overload
+def datetime2ifc(dt: None, ifc_type: Any) -> None: ...
+@overload
+def datetime2ifc(
+    dt: Union[datetime.date, str, None],
+    ifc_type: Literal[
+        "IfcDuration",
+        "IfcTimeStamp",
+        "IfcDateTime",
+        "IfcDate",
+        "IfcTime",
+        "IfcCalendarDate",
+        "IfcLocalTime",
+    ],
+) -> Union[int, str, dict[str, Any], None]: ...
+def datetime2ifc(
+    dt: Union[datetime.date, str, None],
+    ifc_type: Literal[
+        "IfcDuration",
+        "IfcTimeStamp",
+        "IfcDateTime",
+        "IfcDate",
+        "IfcTime",
+        "IfcCalendarDate",
+        "IfcLocalTime",
+    ],
+) -> Union[int, str, dict[str, Any], None]:
     if isinstance(dt, str):
         if ifc_type == "IfcDuration":
             return dt
-        dt = datetime.datetime.fromisoformat(dt)
+        try:
+            dt = datetime.datetime.fromisoformat(dt)
+        except:
+            dt = datetime.time.fromisoformat(dt)
+    elif dt is None:
+        return
 
     if ifc_type == "IfcDuration":
         return isodate.duration_isoformat(dt)
@@ -97,7 +162,103 @@ def datetime2ifc(dt, ifc_type):
         elif isinstance(dt, datetime.time):
             return dt.isoformat()
     elif ifc_type == "IfcCalendarDate":
-        return {"DayComponent": dt.day, "MonthComponent": dt.month, "YearComponent": dt.year}
+        return {
+            "DayComponent": dt.day,
+            "MonthComponent": dt.month,
+            "YearComponent": dt.year,
+        }
     elif ifc_type == "IfcLocalTime":
         # TODO implement timezones
-        return {"HourComponent": dt.hour, "MinuteComponent": dt.minute, "SecondComponent": dt.second}
+        return {
+            "HourComponent": dt.hour,
+            "MinuteComponent": dt.minute,
+            "SecondComponent": dt.second,
+        }
+
+    raise TypeError(f"Unsupported ifc_type for conversion from datetime.datetime = {ifc_type}, value = {dt}")
+
+
+def string_to_date(string):
+    if not string:
+        return None
+    try:
+        return parser.isoparse(string)
+    except:
+        try:
+            return parser.parse(string, dayfirst=True, fuzzy=True)
+        except:
+            return None
+
+
+def string_to_duration(duration_string):
+    # TODO support years, months, weeks aswell
+    days = 0
+    hours = 0
+    minutes = 0
+    seconds = 0
+    match = findall(r"(\d+\.?\d*)d", duration_string)
+    if match:
+        days = float(match[0])
+    match = findall(r"(\d+\.?\d*)h", duration_string)
+    if match:
+        hours = float(match[0])
+    match = findall(r"(\d+\.?\d*)m", duration_string)
+    if match:
+        minutes = float(match[0])
+    match = findall(r"(\d+\.?\d*)s", duration_string)
+    if match:
+        seconds = float(match[0])
+    return isodate.duration_isoformat(datetime.timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds))
+
+
+def parse_duration(value):
+    if not value:
+        return None
+    if isinstance(value, str):
+        if "P" in value:
+            try:
+                return isodate.parse_duration(value)
+            except:
+                print("Error parsing ISO string duration")
+            return None
+        else:
+            try:
+                final_string = "P"
+                value_upper = value.upper()
+                for char in value_upper:
+                    if char.isdigit():
+                        final_string += char
+                    elif char == "D":
+                        final_string += "D"
+                        if "H" in value_upper or "S" in value_upper or "MIN" in value_upper:
+                            final_string += "T"
+                    elif char == "W":
+                        final_string += "W"
+                    elif char == "M":
+                        final_string += "M"
+                    elif char == "Y":
+                        final_string += "Y"
+                    elif char == "H":
+                        final_string = (
+                            final_string[:1] + "T" + final_string[1:] if "T" not in final_string else final_string
+                        )
+                        final_string += "H"
+                    elif char == "M":
+                        if "MIN" in value_upper and "T" not in final_string:
+                            final_string = final_string[:1] + "T" + final_string[1:]
+                        final_string += "M"
+                    elif char == "S":
+                        final_string = (
+                            final_string[:1] + "T" + final_string[1:] if "T" not in final_string else final_string
+                        )
+                        final_string += "S"
+                return isodate.parse_duration(final_string)
+            except:
+                print("error fuzzy parsing duration")
+                return None
+
+
+def canonicalise_time(time):
+    if not time:
+        return "-"
+    return time.strftime("%d/%m/%y")

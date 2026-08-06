@@ -175,7 +175,7 @@ Scenario: Load project elements - load objects filtered by whitelist
     And I press "bim.load_project(filepath='{cwd}/test/files/basic.ifc', is_advanced=True)"
     When I set "scene.BIMProjectProperties.collection_mode" to "DECOMPOSITION"
     And I set "scene.BIMProjectProperties.filter_mode" to "WHITELIST"
-    And I set "scene.BIMProjectProperties.filter_query" to ".IfcSlab"
+    And I set "scene.BIMProjectProperties.filter_query" to "IfcSlab"
     And I set "scene.BIMProjectProperties.should_filter_spatial_elements" to "True"
     And I press "bim.load_project_elements"
     Then the object "IfcProject/My Project" is an "IfcProject"
@@ -195,7 +195,7 @@ Scenario: Load project elements - load objects filtered by blacklist
     And I press "bim.load_project(filepath='{cwd}/test/files/basic.ifc', is_advanced=True)"
     When I set "scene.BIMProjectProperties.collection_mode" to "DECOMPOSITION"
     And I set "scene.BIMProjectProperties.filter_mode" to "BLACKLIST"
-    And I set "scene.BIMProjectProperties.filter_query" to ".IfcSlab"
+    And I set "scene.BIMProjectProperties.filter_query" to "IfcSlab"
     And I set "scene.BIMProjectProperties.should_filter_spatial_elements" to "True"
     And I press "bim.load_project_elements"
     Then the object "IfcProject/My Project" is an "IfcProject"
@@ -313,113 +313,129 @@ Scenario: Unload project
 
 Scenario: Link IFC
     Given an empty IFC project
-    When I press "bim.link_ifc(filepath='{cwd}/test/files/basic.blend')"
-    Then "scene.BIMProjectProperties.links['{cwd}/test/files/basic.blend'].is_loaded" is "True"
-    And the object "IfcWall/Wall" exists
-    And the object "IfcSlab/Slab" exists
-    And the object "IfcElementAssembly/Empty" exists
-    And the object "IfcBeam/Beam" exists
-    And the object "IfcBuildingStorey/Ground Floor" exists
-    And the object "IfcBuildingStorey/Level 1" exists
+    When I press "bim.link_ifc(filepath='{cwd}/test/files/basic.ifc')"
+    Then "scene.BIMProjectProperties.links['{cwd}/test/files/basic.ifc'].is_loaded" is "True"
+    And the collection "IfcProject/basic.ifc" exists
+    And the object "Chunk" exists
+    And the object "Chunk" is placed in the collection "IfcProject/basic.ifc"
 
 Scenario: Toggle link visibility - wireframe mode
     Given an empty IFC project
-    And I press "bim.link_ifc(filepath='{cwd}/test/files/basic.blend')"
-    When I press "bim.toggle_link_visibility(link='{cwd}/test/files/basic.blend', mode='WIREFRAME')"
-    Then nothing happens
+    And I press "bim.link_ifc(filepath='{cwd}/test/files/basic.ifc')"
+    When I press "bim.toggle_link_visibility(link='{cwd}/test/files/basic.ifc', mode='WIREFRAME')"
+    Then "scene.BIMProjectProperties.links['{cwd}/test/files/basic.ifc'].is_wireframe" is "True"
+    And the object "Chunk" should display as "WIRE"
+    When I press "bim.toggle_link_visibility(link='{cwd}/test/files/basic.ifc', mode='WIREFRAME')"
+    Then "scene.BIMProjectProperties.links['{cwd}/test/files/basic.ifc'].is_wireframe" is "False"
+    And the object "Chunk" should display as "TEXTURED"
+
+Scenario: Toggle link selectability
+    Given an empty IFC project
+    And I press "bim.link_ifc(filepath='{cwd}/test/files/basic.ifc')"
+    When I press "bim.toggle_link_selectability(link='{cwd}/test/files/basic.ifc')"
+    Then "scene.BIMProjectProperties.links['{cwd}/test/files/basic.ifc'].is_selectable" is "False"
+    And the collection "IfcProject/basic.ifc" is unselectable
+    When I press "bim.toggle_link_selectability(link='{cwd}/test/files/basic.ifc')"
+    Then "scene.BIMProjectProperties.links['{cwd}/test/files/basic.ifc'].is_selectable" is "True"
+    And the collection "IfcProject/basic.ifc" is selectable
 
 Scenario: Toggle link visibility - visible mode
     Given an empty IFC project
-    And I press "bim.link_ifc(filepath='{cwd}/test/files/basic.blend')"
-    When I press "bim.toggle_link_visibility(link='{cwd}/test/files/basic.blend', mode='VISIBLE')"
-    Then nothing happens
+    And I press "bim.link_ifc(filepath='{cwd}/test/files/basic.ifc')"
+    When I press "bim.toggle_link_visibility(link='{cwd}/test/files/basic.ifc', mode='VISIBLE')"
+    Then "scene.BIMProjectProperties.links['{cwd}/test/files/basic.ifc'].is_hidden" is "True"
+    And the collection "IfcProject/basic.ifc" exclude status is "True"
+    When I press "bim.toggle_link_visibility(link='{cwd}/test/files/basic.ifc', mode='VISIBLE')"
+    Then "scene.BIMProjectProperties.links['{cwd}/test/files/basic.ifc'].is_hidden" is "False"
+    And the collection "IfcProject/basic.ifc" exclude status is "False"
 
 Scenario: Unload link
     Given an empty Blender session
-    And I press "bim.link_ifc(filepath='{cwd}/test/files/basic.blend')"
-    When I press "bim.unload_link(filepath='{cwd}/test/files/basic.blend')"
-    Then "scene.BIMProjectProperties.links['{cwd}/test/files/basic.blend'].is_loaded" is "False"
-    And "scene.collection.children.get('IfcProject/My Project')" is "None"
+    And I press "bim.link_ifc(filepath='{cwd}/test/files/basic.ifc')"
+    When I press "bim.unload_link(filepath='{cwd}/test/files/basic.ifc')"
+    Then "scene.BIMProjectProperties.links['{cwd}/test/files/basic.ifc'].is_loaded" is "False"
+    And the collection "IfcProject/basic.ifc" does not exist
 
 Scenario: Load link
     Given an empty Blender session
-    And I press "bim.link_ifc(filepath='{cwd}/test/files/basic.blend')"
-    And I press "bim.unload_link(filepath='{cwd}/test/files/basic.blend')"
-    When I press "bim.load_link(filepath='{cwd}/test/files/basic.blend')"
-    Then "scene.BIMProjectProperties.links['{cwd}/test/files/basic.blend'].is_loaded" is "True"
-    And "scene.collection.children['IfcProject/My Project'].users" is "2"
+    And I press "bim.link_ifc(filepath='{cwd}/test/files/basic.ifc')"
+    And I press "bim.unload_link(filepath='{cwd}/test/files/basic.ifc')"
+    When I press "bim.load_link(filepath='{cwd}/test/files/basic.ifc')"
+    Then "scene.BIMProjectProperties.links['{cwd}/test/files/basic.ifc'].is_loaded" is "True"
+    And the collection "IfcProject/basic.ifc" exists in viewlayer
 
 Scenario: Unlink IFC
     Given an empty Blender session
-    And I press "bim.link_ifc(filepath='{cwd}/test/files/basic.blend')"
-    And I press "bim.unload_link(filepath='{cwd}/test/files/basic.blend')"
-    When I press "bim.unlink_ifc(filepath='{cwd}/test/files/basic.blend')"
-    Then "scene.BIMProjectProperties.links.get('{cwd}/test/files/basic.blend')" is "None"
-    And "scene.collection.children.get('IfcProject/My Project')" is "None"
+    And I press "bim.link_ifc(filepath='{cwd}/test/files/basic.ifc')"
+    And I press "bim.unload_link(filepath='{cwd}/test/files/basic.ifc')"
+    When I press "bim.unlink_ifc(filepath='{cwd}/test/files/basic.ifc')"
+    Then "scene.BIMProjectProperties.links.get('{cwd}/test/files/basic.ifc')" is "None"
+    And "scene.collection.children.get('IfcProject/basic.ifc')" is "None"
+    And the object "Chunk" does not exist
 
 Scenario: Export IFC - blank project
     Given an empty IFC project
-    When I press "export_ifc.bim(filepath='{cwd}/test/files/export.ifc')"
+    When I press "export_ifc.bim(filepath='{cwd}/test/files/temp/export.ifc')"
     Then nothing happens
 
 Scenario: Export IFC - with basic contents
     Given an empty Blender session
     And I press "bim.load_project(filepath='{cwd}/test/files/basic.ifc')"
-    When I press "export_ifc.bim(filepath='{cwd}/test/files/export.ifc')"
-    Then "scene.BIMProperties.ifc_file" is "{cwd}/test/files/export.ifc"
+    When I press "export_ifc.bim(filepath='{cwd}/test/files/temp/export.ifc')"
+    Then "scene.BIMProperties.ifc_file" is "{cwd}/test/files/temp/export.ifc"
 
 Scenario: Export IFC - with basic contents and saving as another file
     Given an empty Blender session
     And I press "bim.load_project(filepath='{cwd}/test/files/basic.ifc')"
-    When I press "export_ifc.bim(filepath='{cwd}/test/files/export.ifc', should_save_as=True)"
-    Then "scene.BIMProperties.ifc_file" is "{cwd}/test/files/export.ifc"
+    When I press "export_ifc.bim(filepath='{cwd}/test/files/temp/export.ifc', should_save_as=True)"
+    Then "scene.BIMProperties.ifc_file" is "{cwd}/test/files/temp/export.ifc"
 
 Scenario: Export IFC - with basic contents and saving as IfcJSON where import is not supported
     Given an empty Blender session
     And I press "bim.load_project(filepath='{cwd}/test/files/basic.ifc')"
-    When I press "export_ifc.bim(filepath='{cwd}/test/files/export.ifcjson', should_save_as=True)"
+    When I press "export_ifc.bim(filepath='{cwd}/test/files/temp/export.ifcjson', should_save_as=True)"
     Then "scene.BIMProperties.ifc_file" is "{cwd}/test/files/basic.ifc"
 
 Scenario: Export IFC - with basic contents and round-tripping an IfcZip
     Given an empty Blender session
     And I press "bim.load_project(filepath='{cwd}/test/files/basic.ifc')"
-    When I press "export_ifc.bim(filepath='{cwd}/test/files/export.ifczip', should_save_as=True)"
+    When I press "export_ifc.bim(filepath='{cwd}/test/files/temp/export.ifczip', should_save_as=True)"
     Then "scene.BIMProperties.ifc_file" is "{cwd}/test/files/basic.ifc"
     When an empty Blender session is started
-    And I press "bim.load_project(filepath='{cwd}/test/files/export.ifczip')"
+    And I press "bim.load_project(filepath='{cwd}/test/files/temp/export.ifczip')"
     Then the object "IfcProject/My Project" is an "IfcProject"
 
 Scenario: Export IFC - with basic contents and saving as a relative path
     Given an empty Blender session
     And I press "bim.load_project(filepath='{cwd}/test/files/basic.ifc')"
-    When I press "wm.save_mainfile(filepath='{cwd}/test/files/export.blend')"
-    And I press "export_ifc.bim(filepath='{cwd}/test/files/export.ifc', use_relative_path=True)"
+    When I press "wm.save_mainfile(filepath='{cwd}/test/files/temp/export.blend')"
+    And I press "export_ifc.bim(filepath='{cwd}/test/files/temp/export.ifc', use_relative_path=True, save_as_invoked=True)"
     Then "scene.BIMProperties.ifc_file" is "export.ifc"
 
 Scenario: Export IFC - with deleted objects synchronised
     Given an empty IFC project
     When the object "IfcBuildingStorey/My Storey" is selected
-    And I press "object.delete"
-    And I press "export_ifc.bim(filepath='{cwd}/test/files/export.ifc')"
+    And I delete the selected objects
+    And I press "export_ifc.bim(filepath='{cwd}/test/files/temp/export.ifc')"
     And an empty Blender session is started
-    And I press "bim.load_project(filepath='{cwd}/test/files/export.ifc')"
+    And I press "bim.load_project(filepath='{cwd}/test/files/temp/export.ifc')"
     Then the object "IfcBuildingStorey/My Storey" does not exist
 
 Scenario: Export IFC - with moved object location synchronised
     Given an empty IFC project
     When the object "IfcBuildingStorey/My Storey" is moved to "0,0,1"
-    And I press "export_ifc.bim(filepath='{cwd}/test/files/export.ifc')"
+    And I press "export_ifc.bim(filepath='{cwd}/test/files/temp/export.ifc')"
     And an empty Blender session is started
-    And I press "bim.load_project(filepath='{cwd}/test/files/export.ifc')"
+    And I press "bim.load_project(filepath='{cwd}/test/files/temp/export.ifc')"
     Then the object "IfcBuildingStorey/My Storey" is at "0,0,1"
 
 Scenario: Export IFC - with moved grid axis location synchronised
     Given an empty IFC project
     And I press "mesh.add_grid"
     When the object "IfcGridAxis/01" is moved to "1,0,0"
-    And I press "export_ifc.bim(filepath='{cwd}/test/files/export.ifc')"
+    And I press "export_ifc.bim(filepath='{cwd}/test/files/temp/export.ifc')"
     And an empty Blender session is started
-    And I press "bim.load_project(filepath='{cwd}/test/files/export.ifc')"
+    And I press "bim.load_project(filepath='{cwd}/test/files/temp/export.ifc')"
     Then the object "IfcGridAxis/01" bottom left corner is at "1,-2,0"
 
 Scenario: Export IFC - with changed spatial container synchronised
@@ -427,22 +443,23 @@ Scenario: Export IFC - with changed spatial container synchronised
     And I press "bim.load_project(filepath='{cwd}/test/files/basic.ifc')"
     Then the object "IfcSlab/Slab" is in the collection "IfcBuildingStorey/Ground Floor"
     When the object "IfcSlab/Slab" is placed in the collection "IfcBuildingStorey/Level 1"
-    And I press "export_ifc.bim(filepath='{cwd}/test/files/export.ifc')"
+    And I press "export_ifc.bim(filepath='{cwd}/test/files/temp/export.ifc')"
     And an empty Blender session is started
-    And I press "bim.load_project(filepath='{cwd}/test/files/export.ifc')"
+    And I press "bim.load_project(filepath='{cwd}/test/files/temp/export.ifc')"
     Then the object "IfcSlab/Slab" is in the collection "IfcBuildingStorey/Level 1"
 
 Scenario: Export IFC - with changed object scale synchronised
     Given an empty IFC project
     And I add a cube
     And the object "Cube" is selected
+    And I set "scene.BIMRootProperties.ifc_product" to "IfcElement"
     And I set "scene.BIMRootProperties.ifc_class" to "IfcWall"
     And I press "bim.assign_class"
     And the object "IfcWall/Cube" is selected
     When the object "IfcWall/Cube" is scaled to "2"
-    And I press "export_ifc.bim(filepath='{cwd}/test/files/export.ifc')"
+    And I press "export_ifc.bim(filepath='{cwd}/test/files/temp/export.ifc')"
     And an empty Blender session is started
-    And I press "bim.load_project(filepath='{cwd}/test/files/export.ifc')"
+    And I press "bim.load_project(filepath='{cwd}/test/files/temp/export.ifc')"
     Then the object "IfcWall/Cube" dimensions are "4,4,4"
 
 Scenario: Export IFC - with changed style colour synchronised
@@ -450,13 +467,14 @@ Scenario: Export IFC - with changed style colour synchronised
     And I add a cube
     And the object "Cube" is selected
     And I add a material
+    And I set "scene.BIMRootProperties.ifc_product" to "IfcElement"
     And I set "scene.BIMRootProperties.ifc_class" to "IfcWall"
     And I press "bim.assign_class"
     And the object "IfcWall/Cube" is selected
     When the material "Material" colour is set to "1,0,0,1"
-    And I press "export_ifc.bim(filepath='{cwd}/test/files/export.ifc')"
+    And I press "export_ifc.bim(filepath='{cwd}/test/files/temp/export.ifc')"
     And an empty Blender session is started
-    And I press "bim.load_project(filepath='{cwd}/test/files/export.ifc')"
+    And I press "bim.load_project(filepath='{cwd}/test/files/temp/export.ifc', should_start_fresh_session=False)"
     Then the material "Material" colour is "1,0,0,1"
 
 Scenario: Export IFC - with changed style element synchronised
@@ -464,12 +482,13 @@ Scenario: Export IFC - with changed style element synchronised
     And I add a cube
     And the object "Cube" is selected
     And I add a material
+    And I set "scene.BIMRootProperties.ifc_product" to "IfcElement"
     And I set "scene.BIMRootProperties.ifc_class" to "IfcWall"
     And I press "bim.assign_class"
     And the object "IfcWall/Cube" is selected
     When I add a material
     And the material "Material.001" colour is set to "1,0,0,1"
-    And I press "export_ifc.bim(filepath='{cwd}/test/files/export.ifc')"
+    And I press "export_ifc.bim(filepath='{cwd}/test/files/temp/export.ifc')"
     And an empty Blender session is started
-    And I press "bim.load_project(filepath='{cwd}/test/files/export.ifc')"
+    And I press "bim.load_project(filepath='{cwd}/test/files/temp/export.ifc', should_start_fresh_session=False)"
     Then the material "Material.001" colour is "1,0,0,1"

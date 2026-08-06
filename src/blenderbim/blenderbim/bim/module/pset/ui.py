@@ -16,6 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with BlenderBIM Add-on.  If not, see <http://www.gnu.org/licenses/>.
 
+import blenderbim.tool as tool
 from bpy.types import Panel
 from blenderbim.bim.ifc import IfcStore
 from blenderbim.bim.helper import prop_with_search
@@ -23,9 +24,13 @@ from blenderbim.bim.module.pset.data import (
     ObjectPsetsData,
     ObjectQtosData,
     MaterialPsetsData,
+    MaterialSetPsetsData,
+    MaterialSetItemPsetsData,
     TaskQtosData,
     ResourceQtosData,
     ResourcePsetsData,
+    GroupQtosData,
+    GroupPsetData,
     ProfilePsetsData,
     WorkSchedulePsetsData,
 )
@@ -39,23 +44,23 @@ def draw_property(prop, layout, copy_operator=None):
 
 
 def draw_single_property(prop, layout, copy_operator=None):
-    value_name = prop.metadata.get_value_name()
+    value_name = prop.metadata.get_value_name(display_only=True)
     if not value_name:
         layout.label(text=prop["Name"])
         return
     layout.prop(
         prop.metadata,
         value_name,
-        text=prop.metadata.name,
+        text=prop.metadata.display_name,
     )
+    if prop.metadata.is_uri:
+        op = layout.operator("bim.select_uri_attribute", text="", icon="FILE_FOLDER")
+        op.data_path = prop.metadata.path_from_id("string_value")
     if prop.metadata.is_optional:
         layout.prop(prop.metadata, "is_null", icon="RADIOBUT_OFF" if prop.metadata.is_null else "RADIOBUT_ON", text="")
     if copy_operator:
         op = layout.operator(f"{copy_operator}", text="", icon="COPYDOWN")
         op.name = prop.metadata.name
-    if prop.metadata.is_uri:
-        op = layout.operator("bim.select_uri_prop", text="", icon="FILE_FOLDER")
-        op.data_path = prop.metadata.path_from_id("string_value")
 
 
 def draw_enumerated_property(prop, layout, copy_operator=None):
@@ -68,17 +73,18 @@ def draw_enumerated_property(prop, layout, copy_operator=None):
         grid = layout.column_flow(columns=3)
         for e in prop.enumerated_value.enumerated_values:
             grid.prop(e, "is_selected", text=str(e[value_name]))
+    if copy_operator:
+        op = layout.operator(f"{copy_operator}", text="", icon="COPYDOWN")
+        op.name = prop.metadata.name
 
 
 def get_active_pset_obj_name(context, obj_type):
-    if obj_type == "Object":
+    if obj_type in ("Object", "Material", "MaterialSet", "MaterialSetItem"):
         return context.active_object.name
-    elif obj_type == "Material":
-        return context.active_object.active_material.name
     return ""
 
 
-def draw_psetqto_ui(context, pset_id, pset, props, layout, obj_type):
+def draw_psetqto_ui(context, pset_id, pset, props, layout, obj_type, allow_removing=True):
     box = layout.box()
     row = box.row(align=True)
     if "is_expanded" not in pset:
@@ -86,38 +92,49 @@ def draw_psetqto_ui(context, pset_id, pset, props, layout, obj_type):
     icon = "TRIA_DOWN" if pset["is_expanded"] else "TRIA_RIGHT"
     row.operator("bim.toggle_pset_expansion", icon=icon, text="", emboss=False).pset_id = pset_id
     obj_name = get_active_pset_obj_name(context, obj_type)
-    if not props.active_pset_id:
-        row.label(text=pset["Name"], icon="COPY_ID")
-        op = row.operator("bim.guess_all_quantities", icon="FILE_REFRESH", text="")
-        op.pset_id = pset_id
-        op.obj_name = obj_name
-        op.obj_type = obj_type
-        op = row.operator("bim.enable_pset_editing", icon="GREASEPENCIL", text="")
-        op.pset_id = pset_id
-        op.obj = obj_name
-        op.obj_type = obj_type
-        op = row.operator("bim.remove_pset", icon="X", text="")
-        op.pset_id = pset_id
-        op.obj = obj_name
-        op.obj_type = obj_type
-    elif props.active_pset_id != pset_id:
-        row.label(text=pset["Name"], icon="COPY_ID")
-        op = row.operator("bim.remove_pset", icon="X", text="")
-        op.pset_id = pset_id
-        op.obj = obj_name
-        op.obj_type = obj_type
-    elif props.active_pset_id == pset_id:
+    if props.active_pset_id == pset_id:
         row.prop(props, "active_pset_name", icon="COPY_ID", text="")
         op = row.operator("bim.edit_pset", icon="CHECKMARK", text="")
+        op.pset_id = pset_id
         op.obj = obj_name
         op.obj_type = obj_type
         op = row.operator("bim.disable_pset_editing", icon="CANCEL", text="")
         op.obj = obj_name
         op.obj_type = obj_type
+    elif not props.active_pset_id:
+        row.label(text=pset["Name"], icon="COPY_ID")
+        op = row.operator("bim.enable_pset_editing", icon="GREASEPENCIL", text="")
+        op.pset_id = pset_id
+        op.obj = obj_name
+        op.obj_type = obj_type
+        remove_pset_row = row.row(align=True)
+        op = remove_pset_row.operator("bim.remove_pset", icon="X", text="")
+        op.pset_id = pset_id
+        op.obj = obj_name
+        op.obj_type = obj_type
+        remove_pset_row.enabled = allow_removing
+    elif props.active_pset_id != pset_id:
+        row.label(text=pset["Name"], icon="COPY_ID")
+        remove_pset_row = row.row(align=True)
+        op = remove_pset_row.operator("bim.remove_pset", icon="X", text="")
+        op.pset_id = pset_id
+        op.obj = obj_name
+        op.obj_type = obj_type
+        remove_pset_row.enabled = allow_removing
     if pset["is_expanded"]:
         if props.active_pset_id == pset_id:
             for prop in props.properties:
                 draw_psetqto_editable_ui(box, props, prop)
+
+            if not props.active_pset_has_template:
+                row = box.row(align=True)
+                row.prop(props, "prop_name", text="")
+                row.prop(props, "prop_value", text="")
+                op = row.operator("bim.add_proposed_prop", text="", icon="ADD")
+                op.obj = obj_name
+                op.obj_type = obj_type
+                op.prop_name = props.prop_name
+                op.prop_value = props.prop_value
         else:
             has_props_displayed = False
             for prop in pset["Properties"]:
@@ -129,7 +146,9 @@ def draw_psetqto_ui(context, pset_id, pset, props, layout, obj_type):
                 row = box.row(align=True)
                 row.scale_y = 0.8
                 row.label(text=prop["Name"])
-                row.label(text=str(prop["NominalValue"]))
+                op = row.operator("bim.select_similar", text=str(prop["NominalValue"]), icon="NONE", emboss=False)
+                op.key = pset['Name']
+
             if not has_props_displayed:
                 row = box.row()
                 row.scale_y = 0.8
@@ -139,30 +158,15 @@ def draw_psetqto_ui(context, pset_id, pset, props, layout, obj_type):
 def draw_psetqto_editable_ui(box, props, prop):
     row = box.row(align=True)
     draw_property(prop, row, copy_operator="bim.copy_property_to_selection")
-    if (
-        "length" in prop.name.lower()
-        or "width" in prop.name.lower()
-        or "height" in prop.name.lower()
-        or "depth" in prop.name.lower()
-        or "perimeter" in prop.name.lower()
-    ):
-        op = row.operator("bim.guess_quantity", icon="IPO_EASE_IN_OUT", text="")
-        op.prop = prop.name
-    elif "area" in prop.name.lower():
-        op = row.operator("bim.guess_quantity", icon="MESH_CIRCLE", text="")
-        op.prop = prop.name
-    elif "volume" in prop.name.lower():
-        op = row.operator("bim.guess_quantity", icon="SPHERE", text="")
-        op.prop = prop.name
 
 
 class BIM_PT_object_psets(Panel):
-    bl_label = "IFC Object Property Sets"
+    bl_label = "Property Sets"
     bl_idname = "BIM_PT_object_psets"
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "object"
-    bl_parent_id = "BIM_PT_object_metadata"
+    bl_parent_id = "BIM_PT_tab_object_metadata"
 
     @classmethod
     def poll(cls, context):
@@ -186,22 +190,30 @@ class BIM_PT_object_psets(Panel):
         op.obj = context.active_object.name
         op.obj_type = "Object"
 
-        for pset in ObjectPsetsData.data["psets"]:
-            draw_psetqto_ui(context, pset["id"], pset, props, self.layout, "Object")
+        if not props.active_pset_id and props.active_pset_name and props.active_pset_type == "PSET":
+            draw_psetqto_ui(context, 0, {}, props, self.layout, "Object")
+
+        if ObjectPsetsData.data["psets"]:
+            if ObjectPsetsData.data["is_occurrence"]:
+                self.layout.label(text="Occurrence Properties:")
+            else:
+                self.layout.label(text="Type Properties:")
+            for pset in ObjectPsetsData.data["psets"]:
+                draw_psetqto_ui(context, pset["id"], pset, props, self.layout, "Object")
 
         if ObjectPsetsData.data["inherited_psets"]:
-            self.layout.label(text="Inherited Psets:", icon="FILE_PARENT")
+            self.layout.label(text="Inherited Type Properties:", icon="CON_CHILDOF")
             for pset in ObjectPsetsData.data["inherited_psets"]:
-                draw_psetqto_ui(context, pset["id"], pset, props, self.layout, "Object")
+                draw_psetqto_ui(context, pset["id"], pset, props, self.layout, "Object", allow_removing=False)
 
 
 class BIM_PT_object_qtos(Panel):
-    bl_label = "IFC Object Quantity Sets"
+    bl_label = "Quantity Sets"
     bl_idname = "BIM_PT_object_qtos"
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "object"
-    bl_parent_id = "BIM_PT_object_metadata"
+    bl_parent_id = "BIM_PT_tab_object_metadata"
 
     @classmethod
     def poll(cls, context):
@@ -225,54 +237,150 @@ class BIM_PT_object_qtos(Panel):
         op.obj = context.active_object.name
         op.obj_type = "Object"
 
-        for qto in ObjectQtosData.data["qtos"]:
-            draw_psetqto_ui(context, qto["id"], qto, props, self.layout, "Object")
+        if not props.active_pset_id and props.active_pset_name and props.active_pset_type == "QTO":
+            draw_psetqto_ui(context, 0, {}, props, self.layout, "Object")
+
+        if ObjectQtosData.data["qtos"]:
+            if ObjectQtosData.data["is_occurrence"]:
+                self.layout.label(text="Occurrence Quantities:")
+            else:
+                self.layout.label(text="Type Quantities:")
+            for qto in ObjectQtosData.data["qtos"]:
+                draw_psetqto_ui(context, qto["id"], qto, props, self.layout, "Object")
+
+        if ObjectQtosData.data["inherited_qsets"]:
+            self.layout.label(text="Inherited Type Quantities:", icon="CON_CHILDOF")
+            for qset in ObjectQtosData.data["inherited_qsets"]:
+                draw_psetqto_ui(context, qset["id"], qset, props, self.layout, "Object", allow_removing=False)
 
 
 class BIM_PT_material_psets(Panel):
-    bl_label = "IFC Material Property Sets"
+    bl_label = "Material Property Sets"
     bl_idname = "BIM_PT_material_psets"
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
-    bl_context = "material"
+    bl_context = "scene"
+    bl_parent_id = "BIM_PT_materials"
 
     @classmethod
     def poll(cls, context):
-        if not context.active_object:
-            return False
-        if not context.active_object.active_material:
-            return False
-        props = context.active_object.active_material.BIMObjectProperties
-        if not props.ifc_definition_id:
-            return False
-        file = IfcStore.get_file()
-        if not file or file.schema == "IFC2X3":
+        ifc_file = tool.Ifc.get()
+        if not ifc_file or ifc_file.schema == "IFC2X3":
             return False  # We don't support material psets in IFC2X3 because they suck
-        return True
+        props = context.scene.BIMMaterialProperties
+        if props.materials and props.active_material_index < len(props.materials):
+            material = props.materials[props.active_material_index]
+            if material.ifc_definition_id:
+                return True
+        return False
 
     def draw(self, context):
+        props = context.scene.BIMMaterialProperties
+        if props.materials and props.active_material_index < len(props.materials):
+            ifc_definition_id = props.materials[props.active_material_index].ifc_definition_id
+
         if not MaterialPsetsData.is_loaded:
             MaterialPsetsData.load()
+        elif ifc_definition_id != MaterialPsetsData.data["ifc_definition_id"]:
+            MaterialPsetsData.load()
 
-        props = context.active_object.active_material.PsetProperties
+        props = context.scene.MaterialPsetProperties
         row = self.layout.row(align=True)
         prop_with_search(row, props, "pset_name", text="")
         op = row.operator("bim.add_pset", icon="ADD", text="")
-        op.obj = context.active_object.active_material.name
+        op.obj = ""
         op.obj_type = "Material"
+
+        if not props.active_pset_id and props.active_pset_name and props.active_pset_type == "PSET":
+            draw_psetqto_ui(context, 0, {}, props, self.layout, "Material")
 
         for pset in MaterialPsetsData.data["psets"]:
             draw_psetqto_ui(context, pset["id"], pset, props, self.layout, "Material")
 
 
+class BIM_PT_material_set_psets(Panel):
+    bl_label = "Material Set Property Sets"
+    bl_idname = "BIM_PT_material_set_psets"
+    bl_options = {"DEFAULT_CLOSED"}
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "object"
+    bl_parent_id = "BIM_PT_object_material"
+
+    @classmethod
+    def poll(cls, context):
+        if not context.active_object:
+            return False
+        if not tool.Ifc.get() or tool.Ifc.get().schema == "IFC2X3":
+            return False  # We don't support material psets in IFC2X3 because they suck
+        if not tool.Ifc.get_entity(context.active_object):
+            return False
+        return True
+
+    def draw(self, context):
+        if not MaterialSetPsetsData.is_loaded:
+            MaterialSetPsetsData.load()
+
+        props = context.active_object.MaterialSetPsetProperties
+        row = self.layout.row(align=True)
+        prop_with_search(row, props, "pset_name", text="")
+        op = row.operator("bim.add_pset", icon="ADD", text="")
+        op.obj = context.active_object.name
+        op.obj_type = "MaterialSet"
+
+        if not props.active_pset_id and props.active_pset_name and props.active_pset_type == "PSET":
+            draw_psetqto_ui(context, 0, {}, props, self.layout, "MaterialSet")
+
+        for pset in MaterialSetPsetsData.data["psets"]:
+            draw_psetqto_ui(context, pset["id"], pset, props, self.layout, "MaterialSet")
+
+
+class BIM_PT_material_set_item_psets(Panel):
+    bl_label = "Material Set Item Property Sets"
+    bl_idname = "BIM_PT_material_set_item_psets"
+    bl_options = {"DEFAULT_CLOSED"}
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "object"
+    bl_parent_id = "BIM_PT_object_material"
+
+    @classmethod
+    def poll(cls, context):
+        if not context.active_object:
+            return False
+        if not tool.Ifc.get() or tool.Ifc.get().schema == "IFC2X3":
+            return False  # We don't support material psets in IFC2X3 because they suck
+        if not tool.Ifc.get_entity(context.active_object):
+            return False
+        return True
+
+    def draw(self, context):
+        if not MaterialSetItemPsetsData.is_loaded:
+            MaterialSetItemPsetsData.load()
+
+        props = context.active_object.MaterialSetItemPsetProperties
+        row = self.layout.row(align=True)
+        prop_with_search(row, props, "pset_name", text="")
+        op = row.operator("bim.add_pset", icon="ADD", text="")
+        op.obj = context.active_object.name
+        op.obj_type = "MaterialSetItem"
+
+        if not props.active_pset_id and props.active_pset_name and props.active_pset_type == "PSET":
+            draw_psetqto_ui(context, 0, {}, props, self.layout, "MaterialSetItem")
+
+        for pset in MaterialSetItemPsetsData.data["psets"]:
+            draw_psetqto_ui(context, pset["id"], pset, props, self.layout, "MaterialSetItem")
+
+
 class BIM_PT_task_qtos(Panel):
-    bl_label = "IFC Task Quantity Sets"
+    bl_label = "Task Quantity Sets"
     bl_idname = "BIM_PT_task_qtos"
     bl_options = {"DEFAULT_CLOSED"}
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "scene"
     bl_parent_id = "BIM_PT_work_schedules"
+    bl_order = 2
 
     @classmethod
     def poll(cls, context):
@@ -294,12 +402,15 @@ class BIM_PT_task_qtos(Panel):
         op = row.operator("bim.add_qto", icon="ADD", text="")
         op.obj_type = "Task"
 
+        if not props.active_pset_id and props.active_pset_name and props.active_pset_type == "QTO":
+            draw_psetqto_ui(context, 0, {}, props, self.layout, "Task")
+
         for qto in TaskQtosData.data["qtos"]:
             draw_psetqto_ui(context, qto["id"], qto, props, self.layout, "Task")
 
 
 class BIM_PT_resource_qtos(Panel):
-    bl_label = "IFC Resource Quantity Sets"
+    bl_label = "Resource Quantity Sets"
     bl_idname = "BIM_PT_resource_qtos"
     bl_options = {"DEFAULT_CLOSED"}
     bl_space_type = "PROPERTIES"
@@ -325,12 +436,15 @@ class BIM_PT_resource_qtos(Panel):
         op = row.operator("bim.add_qto", icon="ADD", text="")
         op.obj_type = "Resource"
 
+        if not props.active_pset_id and props.active_pset_name and props.active_pset_type == "QTO":
+            draw_psetqto_ui(context, 0, {}, props, self.layout, "Resource")
+
         for qto in ResourceQtosData.data["qtos"]:
             draw_psetqto_ui(context, qto["id"], qto, props, self.layout, "Resource")
 
 
 class BIM_PT_resource_psets(Panel):
-    bl_label = "IFC Resource Property Sets"
+    bl_label = "Resource Property Sets"
     bl_idname = "BIM_PT_resource_psets"
     bl_options = {"DEFAULT_CLOSED"}
     bl_space_type = "PROPERTIES"
@@ -356,12 +470,83 @@ class BIM_PT_resource_psets(Panel):
         op = row.operator("bim.add_pset", icon="ADD", text="")
         op.obj_type = "Resource"
 
+        if not props.active_pset_id and props.active_pset_name and props.active_pset_type == "PSET":
+            draw_psetqto_ui(context, 0, {}, props, self.layout, "Resource")
+
         for pset in ResourcePsetsData.data["psets"]:
             draw_psetqto_ui(context, pset["id"], pset, props, self.layout, "Resource")
 
 
+class BIM_PT_group_qtos(Panel):
+    bl_label = "Group Quantity Sets"
+    bl_idname = "BIM_PT_group_qtos"
+    bl_options = {"DEFAULT_CLOSED"}
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "scene"
+    bl_parent_id = "BIM_PT_groups"
+
+    @classmethod
+    def poll(cls, context):
+        props = context.scene.BIMGroupProperties
+        total_resources = len(props.groups)
+        if total_resources > 0 and props.active_group_index < total_resources:
+            return True
+        return False
+
+    def draw(self, context):
+        if not GroupQtosData.is_loaded:
+            GroupQtosData.load()
+
+        props = context.scene.GroupPsetProperties
+        row = self.layout.row(align=True)
+        row.prop(props, "qto_name", text="")
+        op = row.operator("bim.add_qto", icon="ADD", text="")
+        op.obj_type = "Group"
+
+        if not props.active_pset_id and props.active_pset_name and props.active_pset_type == "QTO":
+            draw_psetqto_ui(context, 0, {}, props, self.layout, "Group")
+
+        for qto in GroupQtosData.data["qtos"]:
+            draw_psetqto_ui(context, qto["id"], qto, props, self.layout, "Group")
+
+
+class BIM_PT_group_psets(Panel):
+    bl_label = "Group Property Sets"
+    bl_idname = "BIM_PT_group_psets"
+    bl_options = {"DEFAULT_CLOSED"}
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "scene"
+    bl_parent_id = "BIM_PT_groups"
+
+    @classmethod
+    def poll(cls, context):
+        props = context.scene.BIMGroupProperties
+        total_resources = len(props.groups)
+        if total_resources > 0 and props.active_group_index < total_resources:
+            return True
+        return False
+
+    def draw(self, context):
+        if not GroupPsetData.is_loaded:
+            GroupPsetData.load()
+
+        props = context.scene.GroupPsetProperties
+        row = self.layout.row(align=True)
+        prop_with_search(row, props, "pset_name", text="")
+        op = row.operator("bim.add_pset", icon="ADD", text="")
+        op.obj_type = "Group"
+
+        if not props.active_pset_id and props.active_pset_name and props.active_pset_type == "PSET":
+            draw_psetqto_ui(context, 0, {}, props, self.layout, "Group")
+
+        for pset in GroupPsetData.data["psets"]:
+            draw_psetqto_ui(context, pset["id"], pset, props, self.layout, "Group")
+
+
 class BIM_PT_profile_psets(Panel):
-    bl_label = "IFC Profile Property Sets"
+    bl_label = "Profile Property Sets"
     bl_idname = "BIM_PT_profile_psets"
     bl_options = {"DEFAULT_CLOSED"}
     bl_space_type = "PROPERTIES"
@@ -389,18 +574,22 @@ class BIM_PT_profile_psets(Panel):
         op = row.operator("bim.add_pset", icon="ADD", text="")
         op.obj_type = "Profile"
 
+        if not props.active_pset_id and props.active_pset_name and props.active_pset_type == "PSET":
+            draw_psetqto_ui(context, 0, {}, props, self.layout, "Profile")
+
         for pset in ProfilePsetsData.data["psets"]:
             draw_psetqto_ui(context, pset["id"], pset, props, self.layout, "Profile")
 
 
 class BIM_PT_work_schedule_psets(Panel):
-    bl_label = "IFC Work Schedule Property Sets"
+    bl_label = "Work Schedule Property Sets"
     bl_idname = "BIM_PT_work_schedule_psets"
     bl_options = {"DEFAULT_CLOSED"}
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "scene"
     bl_parent_id = "BIM_PT_work_schedules"
+    bl_order = 3
 
     @classmethod
     def poll(cls, context):
@@ -418,17 +607,20 @@ class BIM_PT_work_schedule_psets(Panel):
         op = row.operator("bim.add_pset", icon="ADD", text="")
         op.obj_type = "WorkSchedule"
 
+        if not props.active_pset_id and props.active_pset_name and props.active_pset_type == "PSET":
+            draw_psetqto_ui(context, 0, {}, props, self.layout, "WorkSchedule")
+
         for pset in WorkSchedulePsetsData.data["psets"]:
             draw_psetqto_ui(context, pset["id"], pset, props, self.layout, "WorkSchedule")
 
 
 class BIM_PT_bulk_property_editor(Panel):
-    bl_label = "IFC Bulk Property Editor"
+    bl_label = "Bulk Property Editor"
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "object"
     bl_options = {"DEFAULT_CLOSED"}
-    bl_parent_id = "BIM_PT_utilities_object"
+    bl_parent_id = "BIM_PT_tab_misc"
 
     def draw(self, context):
         pass
@@ -441,7 +633,6 @@ class BIM_PT_rename_parameters(Panel):
     bl_context = "object"
     bl_parent_id = "BIM_PT_bulk_property_editor"
     bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 0
 
     def draw(self, context):
         layout = self.layout
@@ -473,9 +664,9 @@ class BIM_PT_add_edit_custom_properties(Panel):
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "object"
+    bl_order = 2
     bl_parent_id = "BIM_PT_bulk_property_editor"
     bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 1
 
     def draw(self, context):
         layout = self.layout
@@ -526,9 +717,9 @@ class BIM_PT_delete_psets(Panel):
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "object"
+    bl_order = 3
     bl_parent_id = "BIM_PT_bulk_property_editor"
     bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 2
 
     def draw(self, context):
         layout = self.layout

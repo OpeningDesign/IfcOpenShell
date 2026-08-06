@@ -23,12 +23,12 @@ import ifcopenshell.util.schema
 import ifcopenshell.util.type
 from ifcopenshell.entity_instance import entity_instance
 from functools import lru_cache
-from typing import List, Generator, Optional
+from typing import List, Optional
 
-templates = {}
+templates: dict[str, "PsetQto"] = {}
 
 
-def get_template(schema):
+def get_template(schema: str) -> "PsetQto":
     global templates
     if schema not in templates:
         templates[schema] = PsetQto(schema)
@@ -36,9 +36,13 @@ def get_template(schema):
 
 
 class PsetQto:
+    # fmt: off
     templates_path = {
+        "IFC2X3": "Pset_IFC2X3.ifc",
         "IFC4": "Pset_IFC4_ADD2.ifc",
+        "IFC4X3": "Pset_IFC4X3.ifc"
     }
+    # fmt: on
 
     def __init__(self, schema: str, templates=None) -> None:
         self.schema = ifcopenshell.ifcopenshell_wrapper.schema_by_name(schema)
@@ -46,6 +50,12 @@ class PsetQto:
             folder_path = pathlib.Path(__file__).parent.absolute()
             path = str(folder_path.joinpath("schema", self.templates_path[schema]))
             templates = [ifcopenshell.open(path)]
+            # See bug 3583. We backport this change from IFC4X3 because it just makes sense.
+            # Users aren't forced to use it.
+            if schema == "IFC4":
+                for element in templates[0].by_type("IfcPropertySetTemplate"):
+                    if element.TemplateType == "QTO_OCCURRENCEDRIVEN":
+                        element.TemplateType = "QTO_TYPEDRIVENOVERRIDE"
         self.templates = templates
 
     @lru_cache()
@@ -59,10 +69,10 @@ class PsetQto:
         for template in self.templates:
             for prop_set in template.by_type("IfcPropertySetTemplate"):
                 if pset_only:
-                    if prop_set.Name.startswith("Qto_"):
+                    if prop_set.TemplateType and prop_set.TemplateType.startswith("QTO_"):
                         continue
                 if qto_only:
-                    if not prop_set.Name.startswith("Qto_"):
+                    if prop_set.TemplateType and prop_set.TemplateType.startswith("PSET_"):
                         continue
                 if any_class or self.is_applicable(
                     entity, prop_set.ApplicableEntity or "IfcRoot", predefined_type, prop_set.TemplateType
@@ -93,7 +103,8 @@ class PsetQto:
             matched_type = match.group(3)
             if matched_type and not predefined_type:
                 continue
-            elif matched_type and predefined_type != match.group(3):
+            # Case insensitive to handle things like material categories
+            elif matched_type and predefined_type.lower() != match.group(3).lower():
                 continue
 
             applicable_class = match.group(1)
@@ -106,6 +117,19 @@ class PsetQto:
             template_type = template_type or ""
             if "TYPE" in template_type and ifcopenshell.util.schema.is_a(entity, "IfcTypeObject"):
                 types = ifcopenshell.util.type.get_applicable_types(applicable_class, "IFC4")
+                if not types:
+                    # Abstract classes will not have an "applicable type" but
+                    # the implementer agreement still applies to them.
+                    occurrence_class = None
+                    try:
+                        occurrence_class = self.schema.declaration_by_name(applicable_class + "Type")
+                    except:
+                        try:
+                            occurrence_class = self.schema.declaration_by_name("IfcType" + applicable_class[3:])
+                        except:
+                            pass
+                    if occurrence_class:
+                        types = [occurrence_class.name()]
                 for ifc_type in types:
                     if ifcopenshell.util.schema.is_a(entity, ifc_type):
                         return True

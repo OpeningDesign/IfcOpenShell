@@ -16,20 +16,25 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
 
+import ifcopenshell
+from typing import Any
+
+
+def map_representation(
+    file: ifcopenshell.file, representation: ifcopenshell.entity_instance
+) -> ifcopenshell.entity_instance:
+    usecase = Usecase()
+    usecase.file = file
+    usecase.settings = {"representation": representation}
+    return usecase.execute()
+
 
 class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"representation": None}
-        self.ifc_vertices = []
-        for key, value in settings.items():
-            self.settings[key] = value
+    file: ifcopenshell.file
+    settings: dict[str, Any]
 
-    def execute(self):
+    def execute(self) -> ifcopenshell.entity_instance:
         mapping_source = self.get_mapping_source()
-
-        if not mapping_source:
-            return
 
         zero = self.file.createIfcCartesianPoint((0.0, 0.0, 0.0))
         x_axis = self.file.createIfcDirection((1.0, 0.0, 0.0))
@@ -48,7 +53,14 @@ class Usecase:
             }
         )
 
-    def get_mapping_source(self):
+    def get_mapping_source(self) -> ifcopenshell.entity_instance:
         for inverse in self.file.get_inverse(self.settings["representation"]):
             if inverse.is_a("IfcRepresentationMap"):
                 return inverse
+        zero = self.file.createIfcCartesianPoint((0.0, 0.0, 0.0))
+        x_axis = self.file.createIfcDirection((1.0, 0.0, 0.0))
+        z_axis = self.file.createIfcDirection((0.0, 0.0, 1.0))
+        mapping_origin = self.file.createIfcAxis2Placement3D(zero, z_axis, x_axis)
+        return self.file.createIfcRepresentationMap(
+            MappingOrigin=mapping_origin, MappedRepresentation=self.settings["representation"]
+        )

@@ -77,13 +77,13 @@ def draw_addresses(box, parent):
 
 
 class BIM_PT_people(bpy.types.Panel):
-    bl_label = "IFC People"
+    bl_label = "People"
     bl_idname = "BIM_PT_people"
     bl_options = {"DEFAULT_CLOSED"}
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "scene"
-    bl_parent_id = "BIM_PT_project_setup"
+    bl_parent_id = "BIM_PT_tab_stakeholders"
 
     @classmethod
     def poll(cls, context):
@@ -136,13 +136,13 @@ class BIM_PT_people(bpy.types.Panel):
 
 
 class BIM_PT_organisations(bpy.types.Panel):
-    bl_label = "IFC Organisations"
+    bl_label = "Organisations"
     bl_idname = "BIM_PT_organisations"
     bl_options = {"DEFAULT_CLOSED"}
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "scene"
-    bl_parent_id = "BIM_PT_project_setup"
+    bl_parent_id = "BIM_PT_tab_stakeholders"
 
     @classmethod
     def poll(cls, context):
@@ -183,13 +183,13 @@ class BIM_PT_organisations(bpy.types.Panel):
 
 
 class BIM_PT_owner(bpy.types.Panel):
-    bl_label = "IFC Owner History"
+    bl_label = "Owner History"
     bl_idname = "BIM_PT_owner"
     bl_options = {"DEFAULT_CLOSED"}
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "scene"
-    bl_parent_id = "BIM_PT_project_setup"
+    bl_parent_id = "BIM_PT_tab_stakeholders"
 
     @classmethod
     def poll(cls, context):
@@ -234,13 +234,13 @@ class BIM_PT_owner(bpy.types.Panel):
 
 
 class BIM_PT_actor(bpy.types.Panel):
-    bl_label = "IFC Actor"
+    bl_label = "Actor"
     bl_idname = "BIM_PT_actor"
     bl_options = {"DEFAULT_CLOSED"}
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "scene"
-    bl_parent_id = "BIM_PT_project_setup"
+    bl_parent_id = "BIM_PT_tab_stakeholders"
 
     @classmethod
     def poll(cls, context):
@@ -284,13 +284,14 @@ class BIM_PT_actor(bpy.types.Panel):
 
 
 class BIM_PT_object_actor(bpy.types.Panel):
-    bl_label = "IFC Actor"
+    bl_label = "Actor"
     bl_idname = "BIM_PT_object_actor"
     bl_options = {"DEFAULT_CLOSED"}
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "object"
-    bl_parent_id = "BIM_PT_misc_object"
+    bl_order = 1
+    bl_parent_id = "BIM_PT_tab_misc"
 
     @classmethod
     def poll(cls, context):

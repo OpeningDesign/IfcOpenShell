@@ -16,48 +16,35 @@
 # You should have received a copy of the GNU General Public License
 # along with BlenderBIM Add-on.  If not, see <http://www.gnu.org/licenses/>.
 
+import os
 import bpy
 import json
 import addon_utils
 import ifcopenshell.api.owner.settings
+import blenderbim.bim
 import blenderbim.tool as tool
 import blenderbim.core.owner as core_owner
-from blenderbim.bim.module.drawing.prop import RasterStyleProperty
 from bpy.app.handlers import persistent
 from blenderbim.bim.ifc import IfcStore
 from blenderbim.bim.module.owner.prop import get_user_person, get_user_organisation
-from ifcopenshell.api.material.data import Data as MaterialData
-from ifcopenshell.api.type.data import Data as TypeData
+from blenderbim.bim.module.model.data import AuthoringData
+from blenderbim.bim.module.model.workspace import LIST_OF_TOOLS, TOOLS_TO_CLASSES_MAP
+from mathutils import Vector
+from math import cos, degrees
+from typing import Union
 
 
+cwd = os.path.dirname(os.path.realpath(__file__))
 global_subscription_owner = object()
 
 
-def mode_callback(obj, data):
-    if not bpy.context.scene.BIMProjectProperties.is_authoring:
-        return
-    objects = bpy.context.selected_objects
-    if bpy.context.active_object:
-        objects += [bpy.context.active_object]
-    for obj in objects:
-        if (
-            obj.mode != "EDIT"
-            or not obj.data
-            or not isinstance(obj.data, (bpy.types.Mesh, bpy.types.Curve, bpy.types.TextCurve))
-            or not obj.BIMObjectProperties.ifc_definition_id
-        ):
-            continue
-        if obj.data.BIMMeshProperties.ifc_definition_id:
-            IfcStore.edited_objs.add(obj)
-        elif IfcStore.get_file().by_id(obj.BIMObjectProperties.ifc_definition_id).is_a("IfcGridAxis"):
-            IfcStore.edited_objs.add(obj)
-
-
 def name_callback(obj, data):
-    # TODO Do we still need this, now that we are monitoring the undo redo objects?
     try:
         obj.name
     except:
+        # The object is invalid but somehow still has a callback. Clear all
+        # msgbus subscriptions to prevent useless further triggers.
+        bpy.msgbus.clear_by_owner(obj)
         return  # In case the object RNA is gone during an undo / redo operation
     # Blender names are up to 63 UTF-8 bytes
     if len(bytes(obj.name, "utf-8")) >= 63:
@@ -66,55 +53,118 @@ def name_callback(obj, data):
     if isinstance(obj, bpy.types.Material):
         if obj.BIMObjectProperties.ifc_definition_id:
             IfcStore.get_file().by_id(obj.BIMObjectProperties.ifc_definition_id).Name = obj.name
-            MaterialData.load_materials()
         if obj.BIMMaterialProperties.ifc_style_id:
             IfcStore.get_file().by_id(obj.BIMMaterialProperties.ifc_style_id).Name = obj.name
         refresh_ui_data()
         return
 
-    if not obj.BIMObjectProperties.ifc_definition_id or "/" not in obj.name:
+    if not obj.BIMObjectProperties.ifc_definition_id:
         return
+
+    if obj.BIMObjectProperties.is_renaming:
+        obj.BIMObjectProperties.is_renaming = False
+        return
+
     element = IfcStore.get_file().by_id(obj.BIMObjectProperties.ifc_definition_id)
+    if "/" in obj.name:
+        object_name = obj.name
+        element_name = obj.name.split("/", 1)[1]
+    else:
+        element_name = obj.name
+        object_name = element.is_a() + f"/{element_name}"
+        obj.name = object_name  # NOTE: doesn't trigger infinite recursion
+
+    if element.is_a("IfcGridAxis"):
+        element.AxisTag = object_name.split("/")[1]
+        refresh_ui_data()
+
     if not element.is_a("IfcRoot"):
         return
-    if element.is_a("IfcSpatialStructureElement") or (hasattr(element, "IsDecomposedBy") and element.IsDecomposedBy):
-        collection = obj.users_collection[0]
-        collection.name = obj.name
-    if element.is_a("IfcGrid"):
-        axis_obj = IfcStore.get_element(element.UAxes[0].id())
-        axis_collection = axis_obj.users_collection[0]
-        grid_collection = None
-        for collection in bpy.data.collections:
-            if axis_collection.name in collection.children.keys():
-                grid_collection = collection
-                break
-        if grid_collection:
-            grid_collection.name = obj.name
-    if element.is_a("IfcTypeProduct"):
-        TypeData.purge()
-    element.Name = "/".join(obj.name.split("/")[1:])
+    element.Name = element_name
+    if obj.BIMObjectProperties.collection:
+        obj.BIMObjectProperties.collection.name = object_name
     refresh_ui_data()
 
 
 def color_callback(obj, data):
     if obj.BIMMaterialProperties.ifc_style_id:
-        IfcStore.edited_objs.add(obj)
+        tool.Ifc.edit(obj)
 
 
 def active_object_callback():
     refresh_ui_data()
+    update_bim_tool_props()
 
 
-def subscribe_to(object, data_path, callback):
+def update_bim_tool_props():
+    """update BIM Tools props (such as extrusion_depth, length and x_angle) when active object changes"""
+    obj = bpy.context.active_object
+
+    # bunch of checks to see if we're in a valid state
+    if not obj:
+        return
+    mode = bpy.context.mode
+    current_tool = bpy.context.workspace.tools.from_space_view3d_mode(mode)
+    if not current_tool or current_tool.idname not in LIST_OF_TOOLS:
+        return
+    element = tool.Ifc.get_entity(obj)
+    if not element:
+        return
+    representation = ifcopenshell.util.representation.get_representation(element, "Model", "Body", "MODEL_VIEW")
+    if not representation:
+        return
+
+    props = bpy.context.scene.BIMModelProperties
+    if element.is_a("IfcElementType") or element.is_a("IfcElement"):
+        element_type = ifcopenshell.util.element.get_type(element)
+        if element_type:
+            is_bim_tool = current_tool.idname == "bim.bim_tool"
+            if is_bim_tool:
+                props.ifc_class = element_type.is_a()
+            if is_bim_tool or TOOLS_TO_CLASSES_MAP.get(current_tool.idname) == element_type.is_a():
+                props.relating_type_id = str(element_type.id())
+    extrusion = tool.Model.get_extrusion(representation)
+    if not extrusion:
+        return
+
+    def get_x_angle(extrusion):
+        x, y, z = extrusion.ExtrudedDirection.DirectionRatios
+        x_angle = Vector((0, 1)).angle_signed(Vector((y, z)))
+        return x_angle
+
+    si_conversion = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
+    if not AuthoringData.is_loaded:
+        AuthoringData.load()
+
+    if AuthoringData.data["active_material_usage"] == "LAYER2":
+        x_angle = get_x_angle(extrusion)
+        axis = tool.Model.get_wall_axis(obj)["reference"]
+        props.extrusion_depth = extrusion.Depth * si_conversion * cos(x_angle)
+        props.length = (axis[1] - axis[0]).length
+        props.x_angle = x_angle
+
+    elif AuthoringData.data["active_material_usage"] == "LAYER3":
+        x_angle = get_x_angle(extrusion)
+        props.x_angle = x_angle
+
+    elif AuthoringData.data["active_material_usage"] == "PROFILE":
+        props.extrusion_depth = extrusion.Depth * si_conversion
+
+
+def active_material_index_callback(obj, data):
+    refresh_ui_data()
+
+
+def subscribe_to(obj, data_path, callback):
     try:
-        subscribe_to = object.path_resolve(data_path, False)
+        subscribe_to = obj.path_resolve(data_path, False)
     except:
         return
     bpy.msgbus.subscribe_rna(
         key=subscribe_to,
-        owner=object,
+        owner=obj,
         args=(
-            object,
+            obj,
             data_path,
         ),
         notify=callback,
@@ -133,27 +183,22 @@ def refresh_ui_data():
         except AttributeError:
             pass
 
-
-def purge_module_data():
-    from blenderbim.bim import modules
-
-    refresh_ui_data()
-    for name, value in modules.items():
-        try:
-            getattr(getattr(getattr(ifcopenshell.api, name), "data"), "Data").purge()
-        except AttributeError:
-            pass
-
+        # TODO: deprecate prop purge functions and refactor into data classes.
         try:
             getattr(value, "prop").purge()
         except AttributeError:
             pass
 
+    if isinstance(tool.Ifc.get(), ifcopenshell.sqlite):
+        tool.Ifc.get().clear_cache()
+
+    bpy.context.scene.DocProperties.should_draw_decorations = bpy.context.scene.DocProperties.should_draw_decorations
+
 
 @persistent
 def loadIfcStore(scene):
     IfcStore.purge()
-    purge_module_data()
+    refresh_ui_data()
     if not IfcStore.get_file():
         return
     IfcStore.get_schema()
@@ -161,42 +206,24 @@ def loadIfcStore(scene):
 
 
 @persistent
-def undo_pre(scene):
-    IfcStore.track_undo_redo_stack_object_map()
-
-
-@persistent
 def undo_post(scene):
     if IfcStore.last_transaction != bpy.context.scene.BIMProperties.last_transaction:
         IfcStore.last_transaction = bpy.context.scene.BIMProperties.last_transaction
-        IfcStore.undo()
-        purge_module_data()
-    IfcStore.track_undo_redo_stack_selected_objects()
-    IfcStore.reload_undo_redo_stack_objects()
-
-
-@persistent
-def redo_pre(scene):
-    IfcStore.track_undo_redo_stack_object_map()
+        IfcStore.undo(until_key=bpy.context.scene.BIMProperties.last_transaction)
+        refresh_ui_data()
+    tool.Ifc.rebuild_element_maps()
 
 
 @persistent
 def redo_post(scene):
     if IfcStore.last_transaction != bpy.context.scene.BIMProperties.last_transaction:
         IfcStore.last_transaction = bpy.context.scene.BIMProperties.last_transaction
-        IfcStore.redo()
-        purge_module_data()
-    IfcStore.track_undo_redo_stack_selected_objects()
-    IfcStore.reload_undo_redo_stack_objects()
+        IfcStore.redo(until_key=bpy.context.scene.BIMProperties.last_transaction)
+        refresh_ui_data()
+    tool.Ifc.rebuild_element_maps()
 
 
-@persistent
-def ensureIfcExported(scene):
-    if IfcStore.get_file() and not bpy.context.scene.BIMProperties.ifc_file:
-        bpy.ops.export_ifc.bim("INVOKE_DEFAULT")
-
-
-def get_application(ifc):
+def get_application(ifc: ifcopenshell.file) -> ifcopenshell.entity_instance:
     # TODO: cache this for even faster application retrieval. It honestly makes a difference on long scripts.
     version = get_application_version()
     for element in ifc.by_type("IfcApplication"):
@@ -211,7 +238,20 @@ def get_application(ifc):
     )
 
 
-def get_application_version():
+def get_user(ifc: ifcopenshell.file) -> Union[ifcopenshell.entity_instance, None]:
+    # TODO: cache this for even faster application retrieval. It honestly makes a difference on long scripts.
+    if pao := next(iter(ifc.by_type("IfcPersonAndOrganization")), None):
+        return pao
+    elif ifc.schema == "IFC2X3":
+        if (person := next(iter(ifc.by_type("IfcPerson")), None)) is None:
+            person = tool.Ifc.run("owner.add_person")
+        if (organization := next(iter(ifc.by_type("IfcOrganization")), None)) is None:
+            organization = tool.Ifc.run("owner.add_organisation")
+        pao = tool.Ifc.run("owner.add_person_and_organisation", person=person, organisation=organization)
+        return pao
+
+
+def get_application_version() -> str:
     return ".".join(
         [
             str(x)
@@ -224,80 +264,53 @@ def get_application_version():
     )
 
 
+def viewport_shading_changed_callback(area):
+    shading = area.spaces.active.shading.type
+    if shading == "RENDERED":
+        bpy.context.scene.BIMStylesProperties.active_style_type = "External"
+
+
 @persistent
-def setDefaultProperties(scene):
+def load_post(scene):
     global global_subscription_owner
     active_object_key = bpy.types.LayerObjects, "active"
     bpy.msgbus.subscribe_rna(
         key=active_object_key, owner=global_subscription_owner, args=(), notify=active_object_callback
     )
-    ifcopenshell.api.owner.settings.get_user = lambda ifc: core_owner.get_user(tool.Owner)
+
+    # subscribe to changes in viewport shading mode
+    # NOTE: couldn't find a way to make it work for new areas too
+    # it starts working for them after blender restart though
+    for screen in bpy.data.screens:
+        for area in screen.areas:
+            if area.type != "VIEW_3D":
+                continue
+            shading = area.spaces.active.shading
+            key = shading.path_resolve("type", False)
+
+            bpy.msgbus.subscribe_rna(
+                key=key, owner=global_subscription_owner, args=(area,), notify=viewport_shading_changed_callback
+            )
+
+    ifcopenshell.api.owner.settings.get_user = get_user
     ifcopenshell.api.owner.settings.get_application = get_application
-    # TODO: Move to drawing module
-    if len(bpy.context.scene.DocProperties.drawing_styles) == 0:
-        drawing_style = bpy.context.scene.DocProperties.drawing_styles.add()
-        drawing_style.name = "Technical"
-        drawing_style.render_type = "VIEWPORT"
-        drawing_style.raster_style = json.dumps(
-            {
-                RasterStyleProperty.WORLD_COLOR.value: (1, 1, 1),
-                RasterStyleProperty.RENDER_ENGINE.value: "BLENDER_WORKBENCH",
-                RasterStyleProperty.RENDER_TRANSPARENT.value: False,
-                RasterStyleProperty.SHADING_SHOW_OBJECT_OUTLINE.value: True,
-                RasterStyleProperty.SHADING_SHOW_CAVITY.value: False,
-                RasterStyleProperty.SHADING_CAVITY_TYPE.value: "BOTH",
-                RasterStyleProperty.SHADING_CURVATURE_RIDGE_FACTOR.value: 1,
-                RasterStyleProperty.SHADING_CURVATURE_VALLEY_FACTOR.value: 1,
-                RasterStyleProperty.VIEW_TRANSFORM.value: "Standard",
-                RasterStyleProperty.SHADING_LIGHT.value: "FLAT",
-                RasterStyleProperty.SHADING_COLOR_TYPE.value: "SINGLE",
-                RasterStyleProperty.SHADING_SINGLE_COLOR.value: (1, 1, 1),
-                RasterStyleProperty.SHADING_SHOW_SHADOWS.value: False,
-                RasterStyleProperty.SHADING_SHADOW_INTENSITY.value: 0.5,
-                RasterStyleProperty.DISPLAY_LIGHT_DIRECTION.value: (0.5, 0.5, 0.5),
-                RasterStyleProperty.VIEW_USE_CURVE_MAPPING.value: False,
-                RasterStyleProperty.OVERLAY_SHOW_WIREFRAMES.value: True,
-                RasterStyleProperty.OVERLAY_WIREFRAME_THRESHOLD.value: 0,
-                RasterStyleProperty.OVERLAY_SHOW_FLOOR.value: False,
-                RasterStyleProperty.OVERLAY_SHOW_AXIS_X.value: False,
-                RasterStyleProperty.OVERLAY_SHOW_AXIS_Y.value: False,
-                RasterStyleProperty.OVERLAY_SHOW_AXIS_Z.value: False,
-                RasterStyleProperty.OVERLAY_SHOW_OBJECT_ORIGINS.value: False,
-                RasterStyleProperty.OVERLAY_SHOW_RELATIONSHIP_LINES.value: False,
-            }
-        )
-        drawing_style = bpy.context.scene.DocProperties.drawing_styles.add()
-        drawing_style.name = "Shaded"
-        drawing_style.render_type = "VIEWPORT"
-        drawing_style.raster_style = json.dumps(
-            {
-                RasterStyleProperty.WORLD_COLOR.value: (1, 1, 1),
-                RasterStyleProperty.RENDER_ENGINE.value: "BLENDER_WORKBENCH",
-                RasterStyleProperty.RENDER_TRANSPARENT.value: False,
-                RasterStyleProperty.SHADING_SHOW_OBJECT_OUTLINE.value: True,
-                RasterStyleProperty.SHADING_SHOW_CAVITY.value: True,
-                RasterStyleProperty.SHADING_CAVITY_TYPE.value: "BOTH",
-                RasterStyleProperty.SHADING_CURVATURE_RIDGE_FACTOR.value: 1,
-                RasterStyleProperty.SHADING_CURVATURE_VALLEY_FACTOR.value: 1,
-                RasterStyleProperty.VIEW_TRANSFORM.value: "Standard",
-                RasterStyleProperty.SHADING_LIGHT.value: "STUDIO",
-                RasterStyleProperty.SHADING_COLOR_TYPE.value: "MATERIAL",
-                RasterStyleProperty.SHADING_SINGLE_COLOR.value: (1, 1, 1),
-                RasterStyleProperty.SHADING_SHOW_SHADOWS.value: True,
-                RasterStyleProperty.SHADING_SHADOW_INTENSITY.value: 0.5,
-                RasterStyleProperty.DISPLAY_LIGHT_DIRECTION.value: (0.5, 0.5, 0.5),
-                RasterStyleProperty.VIEW_USE_CURVE_MAPPING.value: False,
-                RasterStyleProperty.OVERLAY_SHOW_WIREFRAMES.value: False,
-                RasterStyleProperty.OVERLAY_WIREFRAME_THRESHOLD.value: 0,
-                RasterStyleProperty.OVERLAY_SHOW_FLOOR.value: False,
-                RasterStyleProperty.OVERLAY_SHOW_AXIS_X.value: False,
-                RasterStyleProperty.OVERLAY_SHOW_AXIS_Y.value: False,
-                RasterStyleProperty.OVERLAY_SHOW_AXIS_Z.value: False,
-                RasterStyleProperty.OVERLAY_SHOW_OBJECT_ORIGINS.value: False,
-                RasterStyleProperty.OVERLAY_SHOW_RELATIONSHIP_LINES.value: False,
-            }
-        )
-        drawing_style = bpy.context.scene.DocProperties.drawing_styles.add()
-        drawing_style.name = "Blender Default"
-        drawing_style.render_type = "DEFAULT"
-        bpy.ops.bim.save_drawing_style(index="2")
+    AuthoringData.type_thumbnails = {}
+
+    if not bpy.context.preferences.addons["blenderbim"].preferences.should_setup_toolbar:
+        tool.Blender.unregister_toolbar()
+
+    if bpy.context.preferences.addons["blenderbim"].preferences.should_setup_workspace:
+        if "BIM" in bpy.data.workspaces:
+            if bpy.context.preferences.addons["blenderbim"].preferences.activate_workspace:
+                bpy.context.window.workspace = bpy.data.workspaces["BIM"]
+        else:
+            bpy.ops.workspace.append_activate(idname="BIM", filepath=os.path.join(cwd, "data", "workspace.blend"))
+
+    # To improve usability for new users, we hijack the scene properties
+    # tab. We override default scene properties panels with our own poll
+    # to hide them unless the user has chosen to view Blender properties.
+    for panel in tool.Blender.get_scene_panels_list():
+        if panel in blenderbim.bim.original_scene_panels_polls:
+            continue
+        tool.Blender.override_scene_panel(panel)
+    tool.Blender.setup_tabs()

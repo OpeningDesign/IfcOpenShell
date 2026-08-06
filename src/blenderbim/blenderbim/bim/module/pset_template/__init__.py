@@ -22,7 +22,7 @@ from . import ui, prop, operator
 classes = (
     operator.AddPropEnum,
     operator.AddPropTemplate,
-    operator.AddPsetFile,
+    operator.AddPsetTemplateFile,
     operator.AddPsetTemplate,
     operator.DeletePropEnum,
     operator.DisableEditingPropTemplate,
@@ -33,6 +33,7 @@ classes = (
     operator.EnableEditingPsetTemplate,
     operator.RemovePropTemplate,
     operator.RemovePsetTemplate,
+    operator.RemovePsetTemplateFile,
     operator.SavePsetTemplateFile,
     prop.PsetTemplate,
     prop.EnumerationValues,

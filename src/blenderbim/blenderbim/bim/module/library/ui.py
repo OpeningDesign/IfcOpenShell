@@ -23,13 +23,13 @@ from blenderbim.bim.module.library.data import LibrariesData, LibraryReferencesD
 
 
 class BIM_PT_libraries(Panel):
-    bl_label = "IFC Libraries"
+    bl_label = "Libraries"
     bl_idname = "BIM_PT_libraries"
     bl_options = {"DEFAULT_CLOSED"}
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "scene"
-    bl_parent_id = "BIM_PT_project_setup"
+    bl_parent_id = "BIM_PT_tab_project_setup"
 
     @classmethod
     def poll(cls, context):
@@ -94,13 +94,14 @@ class BIM_PT_libraries(Panel):
 
 
 class BIM_PT_library_references(Panel):
-    bl_label = "IFC Library References"
+    bl_label = "Library References"
     bl_idname = "BIM_PT_library_references"
     bl_options = {"DEFAULT_CLOSED"}
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "object"
-    bl_parent_id = "BIM_PT_misc_object"
+    bl_order = 1
+    bl_parent_id = "BIM_PT_tab_misc"
 
     @classmethod
     def poll(cls, context):

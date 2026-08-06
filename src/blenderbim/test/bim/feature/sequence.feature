@@ -225,7 +225,7 @@ Scenario: Enable editing task
     And I press "bim.enable_editing_work_schedule_tasks(work_schedule={work_schedule})"
     And I press "bim.add_summary_task(work_schedule={work_schedule})"
     And the variable "task" is "IfcStore.get_file().by_type('IfcTask')[0].id()"
-    When I press "bim.enable_editing_task(task={task})"
+    When I press "bim.enable_editing_task_attributes(task={task})"
     Then nothing happens
 
 Scenario: Copy task attribute
@@ -236,7 +236,7 @@ Scenario: Copy task attribute
     And I press "bim.add_summary_task(work_schedule={work_schedule})"
     And I press "bim.add_summary_task(work_schedule={work_schedule})"
     And the variable "task" is "IfcStore.get_file().by_type('IfcTask')[0].id()"
-    And I press "bim.enable_editing_task(task={task})"
+    And I press "bim.enable_editing_task_attributes(task={task})"
     And I set "scene.BIMWorkScheduleProperties.task_attributes[2].string_value" to "Foo"
     When I set "scene.BIMTaskTreeProperties.tasks[1].is_selected" to "True"
     And I press "bim.copy_task_attribute(name='Description')"
@@ -253,7 +253,7 @@ Scenario: Unassign task Successor
     And the variable "nested_task_one" is "IfcStore.get_file().by_type('IfcTask')[1].id()"
     When I press "bim.add_task(task={task})"
     And the variable "nested_task_two" is "IfcStore.get_file().by_type('IfcTask')[2].id()"
-    And I press "bim.enable_editing_task(task={nested_task_one})"
+    And I press "bim.enable_editing_task_attributes(task={nested_task_one})"
     And I press "bim.assign_successor(task={nested_task_two})"
     When I press "bim.unassign_successor(task={nested_task_two})"
     Then nothing happens
@@ -269,7 +269,7 @@ Scenario: Edit time Lag
     And the variable "nested_task_one" is "IfcStore.get_file().by_type('IfcTask')[1].id()"
     When I press "bim.add_task(task={task})"
     And the variable "nested_task_two" is "IfcStore.get_file().by_type('IfcTask')[2].id()"
-    And I press "bim.enable_editing_task(task={nested_task_one})"
+    And I press "bim.enable_editing_task_attributes(task={nested_task_one})"
     When I press "bim.assign_successor(task={nested_task_two})"
     And the variable "rel_sequence" is "IfcStore.get_file().by_type('IfcRelSequence')[0].id()"
     When I press "bim.assign_lag_time(sequence={rel_sequence})"
@@ -290,7 +290,7 @@ Scenario: Unassign time Lag
     And the variable "nested_task_one" is "IfcStore.get_file().by_type('IfcTask')[1].id()"
     When I press "bim.add_task(task={task})"
     And the variable "nested_task_two" is "IfcStore.get_file().by_type('IfcTask')[2].id()"
-    And I press "bim.enable_editing_task(task={nested_task_one})"
+    And I press "bim.enable_editing_task_attributes(task={nested_task_one})"
     When I press "bim.assign_successor(task={nested_task_two})"
     And the variable "rel_sequence" is "IfcStore.get_file().by_type('IfcRelSequence')[0].id()"
     When I press "bim.assign_lag_time(sequence={rel_sequence})"
@@ -309,7 +309,7 @@ Scenario: Edit Sequence Relationship
     And the variable "nested_task_one" is "IfcStore.get_file().by_type('IfcTask')[1].id()"
     When I press "bim.add_task(task={task})"
     And the variable "nested_task_two" is "IfcStore.get_file().by_type('IfcTask')[2].id()"
-    And I press "bim.enable_editing_task(task={nested_task_one})"
+    And I press "bim.enable_editing_task_attributes(task={nested_task_one})"
     When I press "bim.assign_successor(task={nested_task_two})"
     And the variable "rel_sequence" is "IfcStore.get_file().by_type('IfcRelSequence')[0].id()"
     And I press "bim.enable_editing_sequence_attributes(sequence={rel_sequence})"
@@ -326,7 +326,7 @@ Scenario: See the current frame date as text
     And I set "scene.BIMWorkScheduleProperties.visualisation_finish" to "01/02/21"
     And I set "scene.BIMWorkScheduleProperties.speed_types" to "FRAME_SPEED"
     And I set "scene.BIMWorkScheduleProperties.speed_animation_frames" to "7"
-    And I set "scene.BIMWorkScheduleProperties.speed_real_duration" to "P1W"
+    And I set "scene.BIMWorkScheduleProperties.speed_real_duration" to "1 w"
     And I press "bim.visualise_work_schedule_date_range(work_schedule={work_schedule})"
     When I am on frame "1"
     Then the object "Timeline" has a body of "2021-01-01"
@@ -340,7 +340,7 @@ Scenario: Animate the construction of a wall
     And I press "bim.enable_editing_work_schedule_tasks(work_schedule={work_schedule})"
     And I press "bim.add_summary_task(work_schedule={work_schedule})"
     And the variable "task" is "IfcStore.get_file().by_type('IfcTask')[0].id()"
-    And I press "bim.enable_editing_task(task={task})"
+    And I press "bim.enable_editing_task_attributes(task={task})"
     And I set "scene.BIMWorkScheduleProperties.task_attributes.get('PredefinedType').enum_value" to "CONSTRUCTION"
     And I press "bim.edit_task"
     And I press "bim.enable_editing_task_time(task={task})"
@@ -349,6 +349,8 @@ Scenario: Animate the construction of a wall
     And I press "bim.edit_task_time"
     And I add a cube
     And the object "Cube" is selected
+    And I set "scene.BIMRootProperties.ifc_product" to "IfcElement"
+    And I set "scene.BIMRootProperties.ifc_product" to "IfcElement"
     And I set "scene.BIMRootProperties.ifc_class" to "IfcWall"
     And I press "bim.assign_class"
     And the object "IfcWall/Cube" is selected
@@ -357,7 +359,7 @@ Scenario: Animate the construction of a wall
     And I set "scene.BIMWorkScheduleProperties.visualisation_finish" to "01/02/21"
     And I set "scene.BIMWorkScheduleProperties.speed_types" to "FRAME_SPEED"
     And I set "scene.BIMWorkScheduleProperties.speed_animation_frames" to "7"
-    And I set "scene.BIMWorkScheduleProperties.speed_real_duration" to "P1W"
+    And I set "scene.BIMWorkScheduleProperties.speed_real_duration" to "1 w"
     And I press "bim.visualise_work_schedule_date_range(work_schedule={work_schedule})"
     When I am on frame "1"
     Then "scene.objects.get('IfcWall/Cube').hide_viewport" is "True"
@@ -365,9 +367,9 @@ Scenario: Animate the construction of a wall
     When I am on frame "2"
     Then "scene.objects.get('IfcWall/Cube').hide_viewport" is "False"
     And "scene.objects.get('IfcWall/Cube').hide_render" is "False"
-    And "scene.objects.get('IfcWall/Cube').color" is "[0.0, 1.0, 0.0, 1]"
+    And "scene.objects.get('IfcWall/Cube').color[:]" is "[0.0, 1.0, 0.0, 1]"
     When I am on frame "7"
-    Then "scene.objects.get('IfcWall/Cube').color" is "[1.0, 1.0, 1.0, 1]"
+    Then "scene.objects.get('IfcWall/Cube').color[:]" is "[1.0, 1.0, 1.0, 1]"
 
 Scenario: Animate the demolition of a wall
     Given an empty IFC project
@@ -376,7 +378,7 @@ Scenario: Animate the demolition of a wall
     And I press "bim.enable_editing_work_schedule_tasks(work_schedule={work_schedule})"
     And I press "bim.add_summary_task(work_schedule={work_schedule})"
     And the variable "task" is "IfcStore.get_file().by_type('IfcTask')[0].id()"
-    And I press "bim.enable_editing_task(task={task})"
+    And I press "bim.enable_editing_task_attributes(task={task})"
     And I set "scene.BIMWorkScheduleProperties.task_attributes.get('PredefinedType').enum_value" to "DEMOLITION"
     And I press "bim.edit_task"
     And I press "bim.enable_editing_task_time(task={task})"
@@ -385,6 +387,7 @@ Scenario: Animate the demolition of a wall
     And I press "bim.edit_task_time"
     And I add a cube
     And the object "Cube" is selected
+    And I set "scene.BIMRootProperties.ifc_product" to "IfcElement"
     And I set "scene.BIMRootProperties.ifc_class" to "IfcWall"
     And I press "bim.assign_class"
     And the object "IfcWall/Cube" is selected
@@ -393,20 +396,20 @@ Scenario: Animate the demolition of a wall
     And I set "scene.BIMWorkScheduleProperties.visualisation_finish" to "01/02/21"
     And I set "scene.BIMWorkScheduleProperties.speed_types" to "FRAME_SPEED"
     And I set "scene.BIMWorkScheduleProperties.speed_animation_frames" to "7"
-    And I set "scene.BIMWorkScheduleProperties.speed_real_duration" to "P1W"
+    And I set "scene.BIMWorkScheduleProperties.speed_real_duration" to "1 w"
     And I press "bim.visualise_work_schedule_date_range(work_schedule={work_schedule})"
     When I am on frame "1"
     Then "scene.objects.get('IfcWall/Cube').hide_viewport" is "False"
     And "scene.objects.get('IfcWall/Cube').hide_render" is "False"
-    And "scene.objects.get('IfcWall/Cube').color" is "[1.0, 1.0, 1.0, 1]"
+    And "scene.objects.get('IfcWall/Cube').color[:]" is "[1.0, 1.0, 1.0, 1]"
     When I am on frame "2"
     Then "scene.objects.get('IfcWall/Cube').hide_viewport" is "False"
     And "scene.objects.get('IfcWall/Cube').hide_render" is "False"
-    And "scene.objects.get('IfcWall/Cube').color" is "[1.0, 0.0, 0.0, 1]"
+    And "scene.objects.get('IfcWall/Cube').color[:]" is "[1.0, 0.0, 0.0, 1]"
     When I am on frame "7"
     Then "scene.objects.get('IfcWall/Cube').hide_viewport" is "True"
     And "scene.objects.get('IfcWall/Cube').hide_render" is "True"
-    And "scene.objects.get('IfcWall/Cube').color" is "[0.0, 0.0, 0.0, 1]"
+    And "scene.objects.get('IfcWall/Cube').color[:]" is "[0.0, 0.0, 0.0, 1]"
 
 Scenario: Animate the operation of a wall
     Given an empty IFC project
@@ -415,7 +418,7 @@ Scenario: Animate the operation of a wall
     And I press "bim.enable_editing_work_schedule_tasks(work_schedule={work_schedule})"
     And I press "bim.add_summary_task(work_schedule={work_schedule})"
     And the variable "task" is "IfcStore.get_file().by_type('IfcTask')[0].id()"
-    And I press "bim.enable_editing_task(task={task})"
+    And I press "bim.enable_editing_task_attributes(task={task})"
     And I set "scene.BIMWorkScheduleProperties.task_attributes.get('PredefinedType').enum_value" to "OPERATION"
     And I press "bim.edit_task"
     And I press "bim.enable_editing_task_time(task={task})"
@@ -424,6 +427,7 @@ Scenario: Animate the operation of a wall
     And I press "bim.edit_task_time"
     And I add a cube
     And the object "Cube" is selected
+    And I set "scene.BIMRootProperties.ifc_product" to "IfcElement"
     And I set "scene.BIMRootProperties.ifc_class" to "IfcWall"
     And I press "bim.assign_class"
     And the object "IfcWall/Cube" is selected
@@ -432,14 +436,14 @@ Scenario: Animate the operation of a wall
     And I set "scene.BIMWorkScheduleProperties.visualisation_finish" to "01/02/21"
     And I set "scene.BIMWorkScheduleProperties.speed_types" to "FRAME_SPEED"
     And I set "scene.BIMWorkScheduleProperties.speed_animation_frames" to "7"
-    And I set "scene.BIMWorkScheduleProperties.speed_real_duration" to "P1W"
+    And I set "scene.BIMWorkScheduleProperties.speed_real_duration" to "1 w"
     And I press "bim.visualise_work_schedule_date_range(work_schedule={work_schedule})"
     When I am on frame "1"
-    Then "scene.objects.get('IfcWall/Cube').color" is "[1.0, 1.0, 1.0, 1]"
+    Then "scene.objects.get('IfcWall/Cube').color[:]" is "[1.0, 1.0, 1.0, 1]"
     When I am on frame "2"
-    Then "scene.objects.get('IfcWall/Cube').color" is "[0.0, 0.0, 1.0, 1]"
+    Then "scene.objects.get('IfcWall/Cube').color[:]" is "[0.0, 0.0, 1.0, 1]"
     When I am on frame "7"
-    Then "scene.objects.get('IfcWall/Cube').color" is "[1.0, 1.0, 1.0, 1]"
+    Then "scene.objects.get('IfcWall/Cube').color[:]" is "[1.0, 1.0, 1.0, 1]"
 
 Scenario: Animate the movement of a wall
     Given an empty IFC project
@@ -448,7 +452,7 @@ Scenario: Animate the movement of a wall
     And I press "bim.enable_editing_work_schedule_tasks(work_schedule={work_schedule})"
     And I press "bim.add_summary_task(work_schedule={work_schedule})"
     And the variable "task" is "IfcStore.get_file().by_type('IfcTask')[0].id()"
-    And I press "bim.enable_editing_task(task={task})"
+    And I press "bim.enable_editing_task_attributes(task={task})"
     And I set "scene.BIMWorkScheduleProperties.task_attributes.get('PredefinedType').enum_value" to "MOVE"
     And I press "bim.edit_task"
     And I press "bim.enable_editing_task_time(task={task})"
@@ -458,6 +462,7 @@ Scenario: Animate the movement of a wall
     And I add a cube
     And I rename the object "Cube" to "ToObject"
     And the object "ToObject" is selected
+    And I set "scene.BIMRootProperties.ifc_product" to "IfcElement"
     And I set "scene.BIMRootProperties.ifc_class" to "IfcWall"
     And I press "bim.assign_class"
     And the object "IfcWall/ToObject" is selected
@@ -472,26 +477,26 @@ Scenario: Animate the movement of a wall
     And I set "scene.BIMWorkScheduleProperties.visualisation_finish" to "01/02/21"
     And I set "scene.BIMWorkScheduleProperties.speed_types" to "FRAME_SPEED"
     And I set "scene.BIMWorkScheduleProperties.speed_animation_frames" to "7"
-    And I set "scene.BIMWorkScheduleProperties.speed_real_duration" to "P1W"
+    And I set "scene.BIMWorkScheduleProperties.speed_real_duration" to "1 w"
     And I press "bim.visualise_work_schedule_date_range(work_schedule={work_schedule})"
     When I am on frame "1"
-    Then "scene.objects.get('IfcWall/FromObject').color" is "[1.0, 1.0, 1.0, 1]"
+    Then "scene.objects.get('IfcWall/FromObject').color[:]" is "[1.0, 1.0, 1.0, 1]"
     And "scene.objects.get('IfcWall/FromObject').hide_viewport" is "False"
     And "scene.objects.get('IfcWall/FromObject').hide_render" is "False"
     And "scene.objects.get('IfcWall/ToObject').hide_viewport" is "True"
     And "scene.objects.get('IfcWall/ToObject').hide_render" is "True"
     When I am on frame "2"
-    Then "scene.objects.get('IfcWall/FromObject').color" is "[1.0, 0.5, 0.0, 1]"
+    Then "scene.objects.get('IfcWall/FromObject').color[:]" is "[1.0, 0.5, 0.0, 1]"
     And "scene.objects.get('IfcWall/FromObject').hide_viewport" is "False"
     And "scene.objects.get('IfcWall/FromObject').hide_render" is "False"
-    And "scene.objects.get('IfcWall/ToObject').color" is "[1.0, 1.0, 0.0, 1]"
+    And "scene.objects.get('IfcWall/ToObject').color[:]" is "[1.0, 1.0, 0.0, 1]"
     And "scene.objects.get('IfcWall/ToObject').hide_viewport" is "False"
     And "scene.objects.get('IfcWall/ToObject').hide_render" is "False"
     When I am on frame "7"
-    Then "scene.objects.get('IfcWall/FromObject').color" is "[0.0, 0.0, 0.0, 1]"
+    Then "scene.objects.get('IfcWall/FromObject').color[:]" is "[0.0, 0.0, 0.0, 1]"
     Then "scene.objects.get('IfcWall/FromObject').hide_viewport" is "True"
     Then "scene.objects.get('IfcWall/FromObject').hide_render" is "True"
-    And "scene.objects.get('IfcWall/ToObject').color" is "[1.0, 1.0, 1.0, 1]"
+    And "scene.objects.get('IfcWall/ToObject').color[:]" is "[1.0, 1.0, 1.0, 1]"
     And "scene.objects.get('IfcWall/ToObject').hide_viewport" is "False"
     And "scene.objects.get('IfcWall/ToObject').hide_render" is "False"
 
@@ -508,6 +513,7 @@ Scenario: Animate the consumption of a wall
     And I press "bim.edit_task_time"
     And I add a cube
     And the object "Cube" is selected
+    And I set "scene.BIMRootProperties.ifc_product" to "IfcElement"
     And I set "scene.BIMRootProperties.ifc_class" to "IfcWall"
     And I press "bim.assign_class"
     And the object "IfcWall/Cube" is selected
@@ -516,21 +522,55 @@ Scenario: Animate the consumption of a wall
     And I set "scene.BIMWorkScheduleProperties.visualisation_finish" to "01/02/21"
     And I set "scene.BIMWorkScheduleProperties.speed_types" to "FRAME_SPEED"
     And I set "scene.BIMWorkScheduleProperties.speed_animation_frames" to "7"
-    And I set "scene.BIMWorkScheduleProperties.speed_real_duration" to "P1W"
+    And I set "scene.BIMWorkScheduleProperties.speed_real_duration" to "1 w"
     And I press "bim.visualise_work_schedule_date_range(work_schedule={work_schedule})"
     When I am on frame "1"
-    Then "scene.objects.get('IfcWall/Cube').color" is "[1.0, 1.0, 1.0, 1]"
+    Then "scene.objects.get('IfcWall/Cube').color[:]" is "[1.0, 1.0, 1.0, 1]"
     And "scene.objects.get('IfcWall/Cube').hide_viewport" is "False"
     And "scene.objects.get('IfcWall/Cube').hide_render" is "False"
     When I am on frame "2"
-    Then "scene.objects.get('IfcWall/Cube').color" is "[0.0, 1.0, 1.0, 1]"
+    Then "scene.objects.get('IfcWall/Cube').color[:]" is "[0.2, 0.2, 0.2, 1]"
     And "scene.objects.get('IfcWall/Cube').hide_viewport" is "False"
     And "scene.objects.get('IfcWall/Cube').hide_render" is "False"
     When I am on frame "7"
-    Then "scene.objects.get('IfcWall/Cube').color" is "[0.0, 0.0, 0.0, 1]"
+    Then "scene.objects.get('IfcWall/Cube').color[:]" is "[0.0, 0.0, 0.0, 1]"
     Then "scene.objects.get('IfcWall/Cube').hide_viewport" is "True"
     Then "scene.objects.get('IfcWall/Cube').hide_render" is "True"
 
+
+
+Scenario: Clear Previous Animation
+    Given an empty IFC project
+    And I press "bim.add_work_schedule"
+    And the variable "work_schedule" is "IfcStore.get_file().by_type('IfcWorkSchedule')[0].id()"
+    And I press "bim.enable_editing_work_schedule_tasks(work_schedule={work_schedule})"
+    And I press "bim.add_summary_task(work_schedule={work_schedule})"
+    And the variable "task" is "IfcStore.get_file().by_type('IfcTask')[0].id()"
+    And I press "bim.enable_editing_task_attributes(task={task})"
+    And I set "scene.BIMWorkScheduleProperties.task_attributes.get('PredefinedType').enum_value" to "CONSTRUCTION"
+    And I press "bim.edit_task"
+    And I press "bim.enable_editing_task_time(task={task})"
+    And I set "scene.BIMWorkScheduleProperties.task_time_attributes.get('ScheduleStart').string_value" to "2021-01-02"
+    And I set "scene.BIMWorkScheduleProperties.task_time_attributes.get('ScheduleFinish').string_value" to "2021-01-06"
+    And I press "bim.edit_task_time"
+    And I add a cube
+    And the object "Cube" is selected
+    And I set "scene.BIMRootProperties.ifc_product" to "IfcElement"
+    And I set "scene.BIMRootProperties.ifc_class" to "IfcWall"
+    And I press "bim.assign_class"
+    And the object "IfcWall/Cube" is selected
+    And I press "bim.assign_product(task={task})"
+    And I set "scene.BIMWorkScheduleProperties.visualisation_start" to "01/01/21"
+    And I set "scene.BIMWorkScheduleProperties.visualisation_finish" to "01/02/21"
+    And I set "scene.BIMWorkScheduleProperties.speed_types" to "FRAME_SPEED"
+    And I set "scene.BIMWorkScheduleProperties.speed_animation_frames" to "7"
+    And I set "scene.BIMWorkScheduleProperties.speed_real_duration" to "1 w"
+    And I press "bim.visualise_work_schedule_date_range(work_schedule={work_schedule})"
+    And I press "bim.clear_previous_animation"
+    When I am on frame "3"
+    Then "scene.objects.get('IfcWall/Cube').hide_viewport" is "False"
+    And "scene.objects.get('IfcWall/Cube').hide_render" is "False"
+    And "scene.objects.get('IfcWall/Cube').color[:]" is "[1.0, 1.0, 1.0, 1]"
 
 Scenario: Generate Gantt Chart
     Given an empty IFC project
@@ -539,7 +579,7 @@ Scenario: Generate Gantt Chart
     And I press "bim.enable_editing_work_schedule_tasks(work_schedule={work_schedule})"
     And I press "bim.add_summary_task(work_schedule={work_schedule})"
     And the variable "task" is "IfcStore.get_file().by_type('IfcTask')[0].id()"
-    And I press "bim.enable_editing_task(task={task})"
+    And I press "bim.enable_editing_task_attributes(task={task})"
     And I set "scene.BIMWorkScheduleProperties.task_attributes.get('PredefinedType').enum_value" to "CONSTRUCTION"
     And I press "bim.edit_task"
     And I press "bim.enable_editing_task_time(task={task})"
@@ -568,10 +608,10 @@ Scenario: Edit task with calendar
     When I press "bim.add_work_time(work_calendar={work_calendar}, time_type="WorkingTimes")"
     When I press "bim.add_work_time(work_calendar={work_calendar}, time_type="ExceptionTimes")"
     And I press "bim.disable_editing_work_calendar"
-    And I press "bim.enable_editing_task_sequence(task={nested_task_one})"
+    And I set "scene.BIMWorkScheduleProperties.active_task_index" to "1"
+    And I press "bim.enable_editing_task_sequence()"
     And I press "bim.assign_successor(task={nested_task_two})"
-    And I press "bim.disable_editing_task"
-    And I press "bim.enable_editing_task_sequence(task={nested_task_three})"
+    And I set "scene.BIMWorkScheduleProperties.active_task_index" to "3"
     And I press "bim.assign_predecessor(task={nested_task_two})"
     And I press "bim.disable_editing_task"
     And I press "bim.enable_editing_task_time(task={nested_task_three})"
@@ -580,7 +620,8 @@ Scenario: Edit task with calendar
     And I press "bim.edit_task_time"
     And I press "bim.enable_editing_task_calendar(task={task})"
     And I press "bim.edit_task_calendar(work_calendar={work_calendar}, task={task})"
-    And I press "bim.enable_editing_task_sequence(task={nested_task_one})"
+    And I set "scene.BIMWorkScheduleProperties.active_task_index" to "1"
+    And I press "bim.enable_editing_task_sequence()"
     And I press "bim.disable_editing_task()"
     Then nothing happens
 
@@ -604,10 +645,10 @@ Scenario: Assign task calendar with Working Time
     When I press "bim.add_work_time(work_calendar={work_calendar}, time_type="WorkingTimes")"
     When I press "bim.add_work_time(work_calendar={work_calendar}, time_type="ExceptionTimes")"
     And I press "bim.disable_editing_work_calendar"
-    And I press "bim.enable_editing_task_sequence(task={nested_task_one})"
+    And I press "bim.enable_editing_task_sequence()"
+    And I set "scene.BIMWorkScheduleProperties.active_task_index" to "1"
     And I press "bim.assign_successor(task={nested_task_two})"
-    And I press "bim.disable_editing_task"
-    And I press "bim.enable_editing_task_sequence(task={nested_task_three})"
+    And I set "scene.BIMWorkScheduleProperties.active_task_index" to "3"
     And I press "bim.assign_predecessor(task={nested_task_two})"
     And I press "bim.disable_editing_task"
     And I press "bim.enable_editing_task_calendar(task={task})"
@@ -634,10 +675,10 @@ Scenario: Assign task calendar with no working time
     And the variable "nested_task_two" is "IfcStore.get_file().by_type('IfcTask')[2].id()"
     When I press "bim.add_task(task={task})"
     And the variable "nested_task_three" is "IfcStore.get_file().by_type('IfcTask')[3].id()"
-    And I press "bim.enable_editing_task_sequence(task={nested_task_one})"
+    And I press "bim.enable_editing_task_sequence()"
+    And I set "scene.BIMWorkScheduleProperties.active_task_index" to "1"
     And I press "bim.assign_successor(task={nested_task_two})"
-    And I press "bim.disable_editing_task"
-    And I press "bim.enable_editing_task_sequence(task={nested_task_three})"
+    And I set "scene.BIMWorkScheduleProperties.active_task_index" to "3"
     And I press "bim.assign_predecessor(task={nested_task_two})"
     And I press "bim.disable_editing_task"
     And I press "bim.enable_editing_task_calendar(task={task})"
@@ -694,9 +735,9 @@ Scenario: Contract All Tasks
     And I press "bim.add_summary_task(work_schedule={work_schedule})"
     And the variable "summary_task" is "IfcStore.get_file().by_type('IfcTask')[0].id()"
     When I press "bim.add_task(task={summary_task})"
-    And the variable "nested_task_one" is "IfcStore.get_file().by_type('IfcTask')[1].id()"
+    And the variable "nested_task_one" is "IfcStore.get_file().by_type('IfcTask')[-1].id()"
     When I press "bim.add_task(task={summary_task})"
-    And the variable "nested_task_two" is "IfcStore.get_file().by_type('IfcTask')[1].id()"
+    And the variable "nested_task_two" is "IfcStore.get_file().by_type('IfcTask')[-1].id()"
     When I press "bim.contract_all_tasks()"
     Then nothing happens
 
@@ -706,11 +747,120 @@ Scenario: Expand All Tasks
     And the variable "work_schedule" is "IfcStore.get_file().by_type('IfcWorkSchedule')[0].id()"
     And I press "bim.enable_editing_work_schedule_tasks(work_schedule={work_schedule})"
     And I press "bim.add_summary_task(work_schedule={work_schedule})"
-    And the variable "summary_task" is "IfcStore.get_file().by_type('IfcTask')[0].id()"
+    And the variable "summary_task" is "IfcStore.get_file().by_type('IfcTask')[-1].id()"
     When I press "bim.add_task(task={summary_task})"
-    And the variable "nested_task_one" is "IfcStore.get_file().by_type('IfcTask')[1].id()"
+    And the variable "nested_task_one" is "IfcStore.get_file().by_type('IfcTask')[-1].id()"
     When I press "bim.add_task(task={summary_task})"
-    And the variable "nested_task_two" is "IfcStore.get_file().by_type('IfcTask')[1].id()"
+    And the variable "nested_task_two" is "IfcStore.get_file().by_type('IfcTask')[-1].id()"
     And I press "bim.contract_all_tasks()"
     When I press "bim.expand_all_tasks()"
     Then nothing happens
+
+Scenario: Assign Product Output
+    Given an empty IFC project
+    And I press "bim.add_work_schedule"
+    And the variable "work_schedule" is "IfcStore.get_file().by_type('IfcWorkSchedule')[0].id()"
+    And I press "bim.enable_editing_work_schedule_tasks(work_schedule={work_schedule})"
+    And I press "bim.add_summary_task(work_schedule={work_schedule})"
+    And the variable "task" is "IfcStore.get_file().by_type('IfcTask')[0].id()"
+    And I add a cube
+    And the object "Cube" is selected
+    And I set "scene.BIMRootProperties.ifc_product" to "IfcElement"
+    And I set "scene.BIMRootProperties.ifc_class" to "IfcWall"
+    And I press "bim.assign_class(ifc_class='IfcWall', predefined_type='SOLIDWALL')"
+    And the object "IfcWall/Cube" is selected
+    And I press "bim.assign_product(task={task})"
+    Then nothing happens
+
+Scenario: Assign Product Input
+    Given an empty IFC project
+    And I press "bim.add_work_schedule"
+    And the variable "work_schedule" is "IfcStore.get_file().by_type('IfcWorkSchedule')[0].id()"
+    And I press "bim.enable_editing_work_schedule_tasks(work_schedule={work_schedule})"
+    And I press "bim.add_summary_task(work_schedule={work_schedule})"
+    And the variable "task" is "IfcStore.get_file().by_type('IfcTask')[0].id()"
+    And I add a cube
+    And the object "Cube" is selected
+    And I set "scene.BIMRootProperties.ifc_product" to "IfcElement"
+    And I set "scene.BIMRootProperties.ifc_class" to "IfcWall"
+    And I press "bim.assign_class(ifc_class='IfcWall', predefined_type='SOLIDWALL')"
+    And the object "IfcWall/Cube" is selected
+    And I press "bim.assign_process(task={task},related_object=0, related_object_type='PRODUCT')"
+    Then nothing happens
+
+Scenario: Select Assigned Outputs
+    Given an empty IFC project
+    And I press "bim.add_work_schedule"
+    And the variable "work_schedule" is "IfcStore.get_file().by_type('IfcWorkSchedule')[0].id()"
+    And I press "bim.enable_editing_work_schedule_tasks(work_schedule={work_schedule})"
+    And I press "bim.add_summary_task(work_schedule={work_schedule})"
+    And the variable "task" is "IfcStore.get_file().by_type('IfcTask')[0].id()"
+    And I add a cube
+    And the object "Cube" is selected
+    And I set "scene.BIMRootProperties.ifc_product" to "IfcElement"
+    And I set "scene.BIMRootProperties.ifc_class" to "IfcWall"
+    And I press "bim.assign_class()"
+    And I press "bim.assign_product(task={task})"
+    When I press "bim.select_task_related_products(task={task})"
+    Then nothing happens
+
+Scenario: Select Assigned Inputs
+    Given an empty IFC project
+    And I press "bim.add_work_schedule"
+    And the variable "work_schedule" is "IfcStore.get_file().by_type('IfcWorkSchedule')[0].id()"
+    And I press "bim.enable_editing_work_schedule_tasks(work_schedule={work_schedule})"
+    And I press "bim.add_summary_task(work_schedule={work_schedule})"
+    And the variable "task" is "IfcStore.get_file().by_type('IfcTask')[0].id()"
+    And I add a cube
+    And the object "Cube" is selected
+    And I set "scene.BIMRootProperties.ifc_product" to "IfcElement"
+    And I set "scene.BIMRootProperties.ifc_class" to "IfcWall"
+    And I press "bim.assign_class()"
+    And the object "IfcWall/Cube" is selected
+    And I press "bim.assign_process(task={task}, related_object_type='PRODUCT')"
+    When I press "bim.select_task_related_products(task={task})"
+    Then nothing happens
+
+Scenario: Duplicate Task
+    Given an empty IFC project
+    And I press "bim.add_work_schedule"
+    And the variable "work_schedule" is "IfcStore.get_file().by_type('IfcWorkSchedule')[0].id()"
+    And I press "bim.enable_editing_work_schedule_tasks(work_schedule={work_schedule})"
+    When I press "bim.add_summary_task(work_schedule={work_schedule})"
+    And the variable "task" is "IfcStore.get_file().by_type('IfcTask')[0].id()"
+    When I press "bim.add_task(task={task})"
+    And the variable "nested_task_one" is "IfcStore.get_file().by_type('IfcTask')[1].id()"
+    When I press "bim.add_task(task={task})"
+    And the variable "nested_task_two" is "IfcStore.get_file().by_type('IfcTask')[2].id()"
+    And I press "bim.enable_editing_task_attributes(task={nested_task_one})"
+    And I press "bim.assign_successor(task={nested_task_two})"
+    When I press "bim.duplicate_task(task={task})"
+    Then nothing happens
+
+Scenario: Duplicate Task and edit sequence Relationship
+    Given an empty IFC project
+    And I press "bim.add_work_schedule"
+    And the variable "work_schedule" is "IfcStore.get_file().by_type('IfcWorkSchedule')[0].id()"
+    And I press "bim.enable_editing_work_schedule_tasks(work_schedule={work_schedule})"
+    When I press "bim.add_summary_task(work_schedule={work_schedule})"
+    And the variable "task" is "IfcStore.get_file().by_type('IfcTask')[0].id()"
+    When I press "bim.add_task(task={task})"
+    And the variable "nested_task_one" is "IfcStore.get_file().by_type('IfcTask')[1].id()"
+    When I press "bim.add_task(task={task})"
+    And the variable "nested_task_two" is "IfcStore.get_file().by_type('IfcTask')[2].id()"
+    And I press "bim.enable_editing_task_attributes(task={nested_task_one})"
+    And I press "bim.assign_successor(task={nested_task_two})"
+    And I press "bim.duplicate_task(task={task})"
+    When I press "bim.enable_editing_task_sequence()"
+    And I set "scene.BIMWorkScheduleProperties.active_task_index" to "1"
+    Then nothing happens
+
+Scenario: Add Animation Camera
+    Given an empty IFC project
+    And I add a cube
+    And the object "Cube" is selected
+    And I set "scene.BIMRootProperties.ifc_product" to "IfcElement"
+    And I set "scene.BIMRootProperties.ifc_class" to "IfcWall"
+    And I press "bim.assign_class"
+    And I press "bim.add_animation_camera"
+    Then "scene.objects.get('4D Camera').name" is "4D Camera"

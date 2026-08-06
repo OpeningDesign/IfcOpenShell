@@ -16,6 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with BlenderBIM Add-on.  If not, see <http://www.gnu.org/licenses/>.
 
+import bpy
 import ifcopenshell
 import blenderbim.core.tool
 import blenderbim.core.geometry
@@ -26,10 +27,7 @@ import blenderbim.bim.helper
 class Type(blenderbim.core.tool.Type):
     @classmethod
     def change_object_data(cls, obj, data, is_global=False):
-        if is_global:
-            obj.data.user_remap(data)
-        else:
-            obj.data = data
+        tool.Geometry.change_object_data(obj, data, is_global)
 
     @classmethod
     def disable_editing(cls, obj):
@@ -60,6 +58,17 @@ class Type(blenderbim.core.tool.Type):
                 return "IfcExtrudedAreaSolid/IfcArbitraryProfileDefWithVoids"
 
     @classmethod
+    def get_model_types(cls):
+        ifc_file = tool.Ifc.get()
+        types = ifc_file.by_type("IfcElementType")
+        # exclude IfcSpatialElementType
+        types += ifc_file.by_type("IfcTypeProduct", include_subtypes=False)
+        if not tool.Ifc.get_schema().startswith("IFC4X3"):
+            types += ifc_file.by_type("IfcWindowStyle")
+            types += ifc_file.by_type("IfcDoorStyle")
+        return types
+
+    @classmethod
     def get_object_data(cls, obj):
         return obj.data
 
@@ -75,11 +84,19 @@ class Type(blenderbim.core.tool.Type):
         return representation.ContextOfItems
 
     @classmethod
+    def get_type_occurrences(cls, element_type):
+        return ifcopenshell.util.element.get_types(element_type)
+
+    @classmethod
     def has_material_usage(cls, element):
         material = ifcopenshell.util.element.get_material(element)
         if material:
             return "Usage" in material.is_a()
         return False
+
+    @classmethod
+    def remove_object(cls, obj):
+        bpy.data.objects.remove(obj)
 
     @classmethod
     def run_geometry_add_representation(
@@ -101,6 +118,7 @@ class Type(blenderbim.core.tool.Type):
         cls, obj=None, representation=None, should_reload=None, is_global=None
     ):
         return blenderbim.core.geometry.switch_representation(
+            tool.Ifc,
             tool.Geometry,
             obj=obj,
             representation=representation,

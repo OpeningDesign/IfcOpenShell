@@ -15,15 +15,34 @@
 #
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
+import ifcopenshell
+from typing import Any
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"metric": None, "attributes": {}}
-        for key, value in settings.items():
-            self.settings[key] = value
+def edit_metric(file: ifcopenshell.file, metric: ifcopenshell.entity_instance, attributes: dict[str, Any]) -> None:
+    """Edit the attributes of a metric
 
-    def execute(self):
-        for name, value in self.settings["attributes"].items():
-            setattr(self.settings["metric"], name, value)
+    For more information about the attributes and data types of an
+    IfcMetric, consult the IFC documentation.
+
+    :param metric: The IfcMetric you want to edit.
+    :type metric: ifcopenshell.entity_instance
+    :param attributes: a dictionary of attribute names and values.
+    :type attributes: dict
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        objective = ifcopenshell.api.run("constraint.add_objective", model)
+        metric = ifcopenshell.api.run("constraint.add_metric", model,
+            objective=objective)
+        ifcopenshell.api.run("constraint.edit_metric", model,
+            metric=metric, attributes={"ConstraintGrade": "HARD"})
+    """
+    settings = {"metric": metric, "attributes": attributes or {}}
+
+    for name, value in settings["attributes"].items():
+        setattr(settings["metric"], name, value)

@@ -17,13 +17,13 @@
 # along with BlenderBIM Add-on.  If not, see <http://www.gnu.org/licenses/>.
 
 import bpy
-import blenderbim.tool as tool
 import ifcopenshell
+import blenderbim.tool as tool
+from ifcopenshell.util.doc import get_entity_doc
 
 
 def refresh():
     StylesData.is_loaded = False
-    StyleAttributesData.is_loaded = False
 
 
 class StylesData:
@@ -32,33 +32,38 @@ class StylesData:
 
     @classmethod
     def load(cls):
-        cls.data = {"style_types": cls.style_types(), "total_styles": cls.total_styles()}
+        cls.data = {
+            "styles_to_blender_material_names": cls.styles_to_blender_material_names(),
+            "style_types": cls.style_types(),
+            "total_styles": cls.total_styles(),
+            "reflectance_methods": cls.reflectance_methods(),
+        }
+        cls.is_loaded = True
+
+    @classmethod
+    def styles_to_blender_material_names(cls):
+        ifc_file = tool.Ifc.get()
+        props = bpy.context.scene.BIMStylesProperties
+        materials = []
+        for style in props.styles:
+            material = tool.Ifc.get_object(ifc_file.by_id(style.ifc_definition_id))
+            materials.append(material.name if material is not None else None)
+        return materials
+
+    @classmethod
+    def reflectance_methods(cls):
+        declaration = tool.Ifc.schema().declaration_by_name("IfcReflectanceMethodEnum")
+        return [(i, i, "") for i in declaration.enumeration_items()]
 
     @classmethod
     def style_types(cls):
         declaration = tool.Ifc.schema().declaration_by_name("IfcPresentationStyle")
         declarations = ifcopenshell.util.schema.get_subtypes(declaration)
-        return [(c, c, "") for c in sorted([d.name() for d in declarations])]
+        version = tool.Ifc.get_schema()
+        return [
+            (c, c, get_entity_doc(version, c).get("description", "")) for c in sorted([d.name() for d in declarations])
+        ]
 
     @classmethod
     def total_styles(cls):
         return len(tool.Ifc.get().by_type("IfcPresentationStyle"))
-
-
-class StyleAttributesData:
-    data = {}
-    is_loaded = False
-
-    @classmethod
-    def load(cls):
-        cls.data = {"attributes": cls.get_attributes()}
-
-    @classmethod
-    def get_attributes(cls):
-        style = tool.Ifc.get().by_id(bpy.context.active_object.active_material.BIMMaterialProperties.ifc_style_id)
-        results = []
-        for name, value in style.get_info().items():
-            if name in ["id", "type", "Styles"]:
-                continue
-            results.append({"name": name, "value": str(value)})
-        return results

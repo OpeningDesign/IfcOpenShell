@@ -20,32 +20,40 @@ import bpy
 import blenderbim.bim.helper
 import blenderbim.tool as tool
 from bpy.types import Panel
-from blenderbim.bim.module.drawing.data import ProductAssignmentsData, TextData, SheetsData, SchedulesData, DrawingsData
+from blenderbim.bim.module.drawing.data import (
+    ProductAssignmentsData,
+    SheetsData,
+    DocumentsData,
+    DrawingsData,
+    ElementFiltersData,
+    DecoratorData,
+)
+from blenderbim.bim.module.drawing.prop import ANNOTATION_TYPES_DATA
 
 
 class BIM_PT_camera(Panel):
-    bl_label = "Drawing Generation"
+    bl_label = "Active Drawing"
     bl_idname = "BIM_PT_camera"
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
-    bl_context = "data"
-
-    @classmethod
-    def poll(cls, context):
-        return context.camera and hasattr(context.active_object.data, "BIMCameraProperties")
+    bl_context = "scene"
+    bl_parent_id = "BIM_PT_tab_drawings"
 
     def draw(self, context):
-        layout = self.layout
-
-        if "/" not in context.active_object.name:
-            layout.label(text="This is not a BIM camera.")
+        if not (context.scene.camera and hasattr(context.scene.camera.data, "BIMCameraProperties")):
+            row = self.layout.row()
+            row.label(text="No Active Drawing", icon="ERROR")
             return
 
-        layout.use_property_split = True
-        dprops = context.scene.DocProperties
-        props = context.active_object.data.BIMCameraProperties
+        if "/" not in context.scene.camera.name:
+            self.layout.label(text="This is not a BIM camera.")
+            return
 
-        col = layout.column(align=True)
+        self.layout.use_property_split = True
+        dprops = context.scene.DocProperties
+        props = context.scene.camera.data.BIMCameraProperties
+
+        col = self.layout.column(align=True)
         row = col.row(align=True)
         row.prop(props, "has_underlay", icon="OUTLINER_OB_IMAGE")
         row.prop(dprops, "should_use_underlay_cache", text="", icon="FILE_REFRESH")
@@ -56,30 +64,90 @@ class BIM_PT_camera(Panel):
         row.prop(props, "has_annotation", icon="MOD_EDGESPLIT")
         row.prop(dprops, "should_use_annotation_cache", text="", icon="FILE_REFRESH")
 
-        row = layout.row()
-        row.prop(dprops, "should_extract")
+        row = self.layout.row()
+        row.prop(props, "calculate_shapely_surfaces")
+        row = self.layout.row()
+        row.prop(props, "calculate_svgfill_surfaces")
 
-        row = layout.row()
-        row.prop(props, "is_nts")
+        row = self.layout.row()
+        row.prop(props, "width")
+        row = self.layout.row()
+        row.prop(props, "height")
 
-        row = layout.row()
-        row.operator("bim.resize_text")
+        row = self.layout.row()
+        row.prop(context.scene.camera.data, "clip_end", text="Depth")
 
-        row = layout.row()
-        row.prop(props, "raster_x")
-        row = layout.row()
-        row.prop(props, "raster_y")
+        row = self.layout.row(align=True)
+        row.prop(props, "diagram_scale", text="Scale")
+        row.prop(props, "is_nts", text="", icon="MOD_EDGESPLIT")
 
-        row = layout.row()
-        row.prop(props, "diagram_scale")
         if props.diagram_scale == "CUSTOM":
-            row = layout.row()
-            row.prop(props, "custom_diagram_scale")
+            row = self.layout.row(align=True)
+            row.prop(props, "custom_scale_numerator", text="Custom Scale")
+            row.prop(props, "custom_scale_denominator", text="")
 
-        row = layout.row(align=True)
+        if props.has_underlay:
+            row = self.layout.row()
+            row.prop(props, "dpi")
+
+        row = self.layout.row(align=True)
         row.operator("bim.create_drawing", text="Create Drawing", icon="OUTPUT")
-        op = row.operator("bim.open_view", icon="URL", text="")
-        op.view = context.active_object.name.split("/")[1]
+        op = row.operator("bim.open_drawing", icon="URL", text="")
+        op.view = context.scene.camera.name.split("/")[1]
+
+
+class BIM_PT_element_filters(Panel):
+    bl_label = "Element Filters"
+    bl_idname = "BIM_PT_element_filters"
+    bl_options = {"DEFAULT_CLOSED"}
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "scene"
+    bl_parent_id = "BIM_PT_camera"
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            context.scene.camera
+            and context.active_object
+            and hasattr(context.active_object.data, "BIMCameraProperties")
+        )
+
+    def draw(self, context):
+        if not ElementFiltersData.is_loaded:
+            ElementFiltersData.load()
+
+        props = context.scene.camera.data.BIMCameraProperties
+
+        if props.filter_mode == "INCLUDE":
+            blenderbim.bim.helper.draw_filter(
+                self.layout, props.include_filter_groups, ElementFiltersData, "drawing_include"
+            )
+            row = self.layout.row(align=True)
+            row.operator(
+                "bim.edit_element_filter", icon="CHECKMARK", text="Save Include Filter"
+            ).filter_mode = "INCLUDE"
+            row.operator("bim.enable_editing_element_filter", icon="CANCEL", text="").filter_mode = "NONE"
+        elif props.filter_mode == "EXCLUDE":
+            blenderbim.bim.helper.draw_filter(
+                self.layout, props.exclude_filter_groups, ElementFiltersData, "drawing_exclude"
+            )
+            row = self.layout.row(align=True)
+            row.operator(
+                "bim.edit_element_filter", icon="CHECKMARK", text="Save Exclude Filter"
+            ).filter_mode = "EXCLUDE"
+            row.operator("bim.enable_editing_element_filter", icon="CANCEL", text="").filter_mode = "NONE"
+        else:
+            row = self.layout.row(align=True)
+            text = "Include Filter" if ElementFiltersData.data["has_include_filter"] else "No Include Filter Found"
+            icon = "GREASEPENCIL" if ElementFiltersData.data["has_include_filter"] else "ADD"
+            row.label(text=text, icon="FILTER")
+            row.operator("bim.enable_editing_element_filter", icon=icon, text="").filter_mode = "INCLUDE"
+            row = self.layout.row(align=True)
+            text = "Exclude Filter" if ElementFiltersData.data["has_exclude_filter"] else "No Exclude Filter Found"
+            icon = "GREASEPENCIL" if ElementFiltersData.data["has_exclude_filter"] else "ADD"
+            row.label(text=text, icon="FILTER")
+            row.operator("bim.enable_editing_element_filter", icon=icon, text="").filter_mode = "EXCLUDE"
 
 
 class BIM_PT_drawing_underlay(Panel):
@@ -88,69 +156,87 @@ class BIM_PT_drawing_underlay(Panel):
     bl_options = {"DEFAULT_CLOSED"}
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
-    bl_context = "data"
+    bl_context = "scene"
     bl_parent_id = "BIM_PT_camera"
 
     @classmethod
     def poll(cls, context):
-        return context.camera and hasattr(context.active_object.data, "BIMCameraProperties")
+        return (
+            context.scene.camera
+            and context.active_object
+            and hasattr(context.active_object.data, "BIMCameraProperties")
+        )
 
     def draw(self, context):
         layout = self.layout
         layout.use_property_split = True
         dprops = context.scene.DocProperties
         props = context.active_object.data.BIMCameraProperties
+        drawing_index_is_valid = props.active_drawing_style_index < len(dprops.drawing_styles)
+
+        if not DrawingsData.is_loaded:
+            DrawingsData.load()
+        drawing_pset_data = DrawingsData.data["active_drawing_pset_data"]
 
         row = layout.row(align=True)
-        row.operator("bim.add_drawing_style")
+        current_shading_style = drawing_pset_data.get("CurrentShadingStyle", None)
+        if current_shading_style is None:
+            row.label(text="Current style is not set.")
+        else:
+            row.label(text="Current Shading Style:")
+            row.label(text=current_shading_style)
+        row.operator("bim.add_drawing_style", icon="ADD", text="")
+        if drawing_index_is_valid:
+            row.operator("bim.remove_drawing_style", icon="X", text="").index = props.active_drawing_style_index
+        row.operator("bim.reload_drawing_styles", icon="FILE_REFRESH", text="")
 
-        if dprops.drawing_styles:
-            layout.template_list("BIM_UL_generic", "", dprops, "drawing_styles", props, "active_drawing_style_index")
+        if not dprops.drawing_styles:
+            return
+        layout.template_list("BIM_UL_generic", "", dprops, "drawing_styles", props, "active_drawing_style_index")
 
-            if props.active_drawing_style_index < len(dprops.drawing_styles):
-                drawing_style = dprops.drawing_styles[props.active_drawing_style_index]
+        if not drawing_index_is_valid:
+            return
+        drawing_style = dprops.drawing_styles[props.active_drawing_style_index]
 
-                row = layout.row(align=True)
-                row.prop(drawing_style, "name")
-                row.operator("bim.remove_drawing_style", icon="X", text="").index = props.active_drawing_style_index
+        row = layout.row(align=True)
+        row.prop(drawing_style, "name")
 
-                row = layout.row()
-                row.prop(drawing_style, "render_type")
-                row = layout.row(align=True)
-                row.prop(drawing_style, "vector_style")
-                row.operator("bim.edit_vector_style", text="", icon="GREASEPENCIL")
-                row = layout.row(align=True)
-                row.prop(drawing_style, "include_query")
-                row = layout.row(align=True)
-                row.prop(drawing_style, "exclude_query")
+        row = layout.row()
+        row.prop(drawing_style, "render_type")
+        row = layout.row(align=True)
+        row.prop(drawing_style, "include_query")
+        row = layout.row(align=True)
+        row.prop(drawing_style, "exclude_query")
 
-                row = layout.row()
-                row.operator("bim.add_drawing_style_attribute")
+        row = layout.row()
+        row.operator("bim.add_drawing_style_attribute")
 
-                for index, attribute in enumerate(drawing_style.attributes):
-                    row = layout.row(align=True)
-                    row.prop(attribute, "name", text="")
-                    row.operator("bim.remove_drawing_style_attribute", icon="X", text="").index = index
+        for index, attribute in enumerate(drawing_style.attributes):
+            row = layout.row(align=True)
+            row.prop(attribute, "name", text="")
+            row.operator("bim.remove_drawing_style_attribute", icon="X", text="").index = index
 
-                row = layout.row(align=True)
-                row.operator("bim.save_drawing_style")
-                row.operator("bim.activate_drawing_style")
+        row = layout.row(align=True)
+        row.operator("bim.save_drawing_style")
+        row.operator("bim.activate_drawing_style")
 
 
 class BIM_PT_drawings(Panel):
     bl_label = "Drawings"
     bl_idname = "BIM_PT_drawings"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "BIM Documentation"
-
-    @classmethod
-    def poll(cls, context):
-        return tool.Ifc.get()
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "scene"
+    bl_parent_id = "BIM_PT_tab_drawings"
+    bl_options = {"HIDE_HEADER"}
 
     def draw(self, context):
         if not DrawingsData.is_loaded:
             DrawingsData.load()
+
+        if not DrawingsData.data["has_saved_ifc"]:
+            draw_project_not_saved_ui(self)
+            return
 
         self.props = context.scene.DocProperties
 
@@ -171,15 +257,39 @@ class BIM_PT_drawings(Panel):
                 active_drawing = self.props.drawings[self.props.active_drawing_index]
                 row = self.layout.row(align=True)
                 col = row.column()
-                col.alignment = 'LEFT'
-                col.operator("bim.remove_drawing", icon="X", text="").drawing = active_drawing.ifc_definition_id
+                col.alignment = "LEFT"
+                row2 = col.row(align=True)
+                row2.operator("bim.remove_drawing", icon="X", text="").drawing = active_drawing.ifc_definition_id
+
+                row2.operator(
+                    "bim.duplicate_drawing", icon="COPYDOWN", text=""
+                ).drawing = active_drawing.ifc_definition_id
+
                 col = row.column()
-                col.alignment = 'RIGHT'
-                op = row.operator("bim.open_view", icon="URL", text="")
+                col.alignment = "RIGHT"
+
+                convert_to_dxf = row.row(align=True)
+                op = convert_to_dxf.operator("bim.convert_svg_to_dxf", text="", icon="IMAGE_DATA")
                 op.view = active_drawing.name
-                op = row.operator("bim.activate_view", icon="OUTLINER_OB_CAMERA", text="")
+                convert_to_dxf.enabled = active_drawing.ifc_definition_id > 0
+
+                op = row.operator("bim.select_all_drawings", icon="SELECT_SUBTRACT", text="")
+
+                open_drawing_button = row.row(align=True)
+                op = open_drawing_button.operator("bim.open_drawing", icon="URL", text="")
+                op.view = active_drawing.name
+                open_drawing_button.enabled = active_drawing.ifc_definition_id > 0
+
+                row.operator("bim.activate_model", icon="VIEW3D", text="")
+
+                drawing_button = row.row(align=True)
+                op = drawing_button.operator("bim.activate_drawing", icon="OUTLINER_OB_CAMERA", text="")
                 op.drawing = active_drawing.ifc_definition_id
-                row.operator("bim.create_drawing", text="", icon="OUTPUT")
+                drawing_button.enabled = active_drawing.ifc_definition_id > 0
+
+                create_drawing_button = row.row(align=True)
+                create_drawing_button.operator("bim.create_drawing", text="", icon="OUTPUT")
+                create_drawing_button.enabled = active_drawing.ifc_definition_id > 0
             self.layout.template_list(
                 "BIM_UL_drawinglist", "", self.props, "drawings", self.props, "active_drawing_index"
             )
@@ -198,23 +308,25 @@ class BIM_PT_drawings(Panel):
 class BIM_PT_schedules(Panel):
     bl_label = "Schedules"
     bl_idname = "BIM_PT_schedules"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "BIM Documentation"
-
-    @classmethod
-    def poll(cls, context):
-        return tool.Ifc.get()
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "scene"
+    bl_parent_id = "BIM_PT_tab_schedules"
+    bl_options = {"HIDE_HEADER"}
 
     def draw(self, context):
-        if not SchedulesData.is_loaded:
-            SchedulesData.load()
+        if not DocumentsData.is_loaded:
+            DocumentsData.load()
+
+        if not DocumentsData.data["has_saved_ifc"]:
+            draw_project_not_saved_ui(self)
+            return
 
         self.props = context.scene.DocProperties
 
         if not self.props.is_editing_schedules:
             row = self.layout.row(align=True)
-            row.label(text=f"{SchedulesData.data['total_schedules']} Schedules Found", icon="LONGDISPLAY")
+            row.label(text=f"{DocumentsData.data['total_schedules']} Schedules Found", icon="LONGDISPLAY")
             row.operator("bim.load_schedules", text="", icon="IMPORT")
             return
 
@@ -238,20 +350,69 @@ class BIM_PT_schedules(Panel):
             )
 
 
+def draw_project_not_saved_ui(self):
+    row = self.layout.row()
+    row.label(text="Project Not Yet Saved", icon="ERROR")
+
+
+class BIM_PT_references(Panel):
+    bl_label = "References"
+    bl_idname = "BIM_PT_references"
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "scene"
+    bl_parent_id = "BIM_PT_tab_references"
+    bl_options = {"HIDE_HEADER"}
+
+    def draw(self, context):
+        if not DocumentsData.is_loaded:
+            DocumentsData.load()
+
+        if not DocumentsData.data["has_saved_ifc"]:
+            draw_project_not_saved_ui(self)
+            return
+
+        self.props = context.scene.DocProperties
+
+        if not self.props.is_editing_references:
+            row = self.layout.row(align=True)
+            row.label(text=f"{DocumentsData.data['total_references']} References Found", icon="OBJECT_HIDDEN")
+            row.operator("bim.load_references", text="", icon="IMPORT")
+            return
+
+        row = self.layout.row(align=True)
+        row.operator("bim.add_reference", icon="ADD")
+        row.operator("bim.disable_editing_references", text="", icon="CANCEL")
+
+        if self.props.references:
+            if self.props.active_reference_index < len(self.props.references):
+                active_reference = self.props.references[self.props.active_reference_index]
+                row = self.layout.row(align=True)
+                row.alignment = "RIGHT"
+                row.operator("bim.open_reference", icon="URL", text="").reference = active_reference.ifc_definition_id
+                row.operator("bim.remove_reference", icon="X", text="").reference = active_reference.ifc_definition_id
+
+            self.layout.template_list(
+                "BIM_UL_generic", "", self.props, "references", self.props, "active_reference_index"
+            )
+
+
 class BIM_PT_sheets(Panel):
     bl_label = "Sheets"
     bl_idname = "BIM_PT_sheets"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "BIM Documentation"
-
-    @classmethod
-    def poll(cls, context):
-        return tool.Ifc.get()
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "scene"
+    bl_parent_id = "BIM_PT_tab_sheets"
+    bl_options = {"HIDE_HEADER"}
 
     def draw(self, context):
         if not SheetsData.is_loaded:
             SheetsData.load()
+
+        if not SheetsData.data["has_saved_ifc"]:
+            draw_project_not_saved_ui(self)
+            return
 
         self.props = context.scene.DocProperties
 
@@ -270,9 +431,11 @@ class BIM_PT_sheets(Panel):
             active_sheet = self.props.sheets[self.props.active_sheet_index]
             row = self.layout.row(align=True)
             row.alignment = "RIGHT"
+            row.operator("bim.edit_sheet", icon="GREASEPENCIL", text="")
             row.operator("bim.open_sheet", icon="URL", text="")
             row.operator("bim.add_drawing_to_sheet", icon="IMAGE_PLANE", text="")
             row.operator("bim.add_schedule_to_sheet", icon="PRESET_NEW", text="")
+            row.operator("bim.add_reference_to_sheet", icon="IMAGE_REFERENCE", text="")
             row.operator("bim.create_sheets", icon="FILE_REFRESH", text="")
             if active_sheet.is_sheet:
                 row.operator("bim.remove_sheet", icon="X", text="").sheet = active_sheet.ifc_definition_id
@@ -284,11 +447,13 @@ class BIM_PT_sheets(Panel):
 
 
 class BIM_PT_product_assignments(Panel):
-    bl_label = "IFC Product Assignments"
+    bl_label = "Product Assignments"
     bl_idname = "BIM_PT_product_assignments"
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "object"
+    bl_order = 1
+    bl_parent_id = "BIM_PT_tab_object_metadata"
 
     @classmethod
     def poll(cls, context):
@@ -308,20 +473,26 @@ class BIM_PT_product_assignments(Panel):
         if props.is_editing_product:
             row = self.layout.row(align=True)
             row.prop(props, "relating_product", text="")
+            row.operator("bim.assign_selected_as_product", icon="OBJECT_DATA", text="")
             row.operator("bim.edit_assigned_product", icon="CHECKMARK", text="")
             row.operator("bim.disable_editing_assigned_product", icon="CANCEL", text="")
         else:
             row = self.layout.row(align=True)
             row.label(text=ProductAssignmentsData.data["relating_product"] or "No Relating Product", icon="OBJECT_DATA")
             row.operator("bim.enable_editing_assigned_product", icon="GREASEPENCIL", text="")
+            col = row.column()
+            col.operator("bim.select_assigned_product", icon="RESTRICT_SELECT_OFF", text="")
+            col.enabled = bool(ProductAssignmentsData.data["relating_product"])
 
 
 class BIM_PT_text(Panel):
-    bl_label = "IFC Text"
+    bl_label = "Text"
     bl_idname = "BIM_PT_text"
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "object"
+    bl_order = 0
+    bl_parent_id = "BIM_PT_tab_object_metadata"
 
     @classmethod
     def poll(cls, context):
@@ -330,109 +501,85 @@ class BIM_PT_text(Panel):
         element = tool.Ifc.get_entity(context.active_object)
         if not element:
             return
-        return element.is_a("IfcAnnotation") and element.ObjectType in ["TEXT", "TEXT_LEADER"]
+        return tool.Drawing.is_annotation_object_type(element, ["TEXT", "TEXT_LEADER"])
 
     def draw(self, context):
-        if not TextData.is_loaded:
-            TextData.load()
-
-        props = context.active_object.BIMTextProperties
+        obj = context.active_object
+        props = obj.BIMTextProperties
 
         if props.is_editing:
+            # shares most of the code with EditTextPopup.draw()
+            # need to keep them in sync or move to some common function
+
             row = self.layout.row(align=True)
             row.operator("bim.edit_text", icon="CHECKMARK")
+            row.operator("bim.add_text_literal", icon="ADD", text="")
             row.operator("bim.disable_editing_text", icon="CANCEL", text="")
-            blenderbim.bim.helper.draw_attributes(props.attributes, self.layout)
+
+            row = self.layout.row(align=True)
+            row.prop(props, "font_size")
+
+            for i, literal_props in enumerate(props.literals):
+                box = self.layout.box()
+                row = self.layout.row(align=True)
+
+                row = box.row(align=True)
+                row.label(text=f"Literal[{i}]:")
+                row.operator("bim.remove_text_literal", icon="X", text="").literal_prop_id = i
+
+                # skip BoxAlignment since we're going to format it ourselves
+                attributes = [a for a in literal_props.attributes if a.name != "BoxAlignment"]
+                blenderbim.bim.helper.draw_attributes(attributes, box)
+
+                row = box.row(align=True)
+                cols = [row.column(align=True) for i in range(3)]
+                for i in range(9):
+                    cols[i % 3].prop(
+                        literal_props,
+                        "box_alignment",
+                        text="",
+                        index=i,
+                        icon="RADIOBUT_ON" if literal_props.box_alignment[i] else "RADIOBUT_OFF",
+                    )
+
+                col = row.column(align=True)
+                col.label(text="    Text box alignment:")
+                col.label(text=f'    {literal_props.attributes["BoxAlignment"].string_value}')
+
         else:
+            text_data = DecoratorData.get_ifc_text_data(obj)
+
             row = self.layout.row()
             row.operator("bim.enable_editing_text", icon="GREASEPENCIL")
 
-            for attribute in TextData.data["attributes"]:
-                row = self.layout.row(align=True)
-                row.label(text=attribute["name"])
-                row.label(text=attribute["value"])
+            row = self.layout.row(align=True)
+            row.label(text="FontSize")
+            row.label(text=str(text_data["FontSize"]))
 
-        row = self.layout.row()
-        row.prop(props, "font_size")
-        row = self.layout.row()
-        row.prop(props, "symbol")
-
-
-class BIM_PT_annotation_utilities(Panel):
-    bl_idname = "BIM_PT_annotation_utilities"
-    bl_label = "Annotation"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "BIM Documentation"
-
-    def draw(self, context):
-        layout = self.layout
-
-        self.props = context.scene.DocProperties
-
-        row = layout.row(align=True)
-        op = row.operator("bim.add_annotation", text="Dimension", icon="FIXED_SIZE")
-        op.object_type = "DIMENSION"
-        op.data_type = "curve"
-        op = row.operator("bim.add_annotation", text="Angle", icon="DRIVER_ROTATIONAL_DIFFERENCE")
-        op.object_type = "ANGLE"
-        op.data_type = "mesh"
-
-        row = layout.row(align=True)
-        op = row.operator("bim.add_annotation", text="Radius", icon="FORWARD")
-        op.object_type = "RADIUS"
-        op.data_type = "curve"
-        op = row.operator("bim.add_annotation", text="Diameter", icon="ARROW_LEFTRIGHT")
-        op.object_type = "DIAMETER"
-        op.data_type = "curve"
-
-        row = layout.row(align=True)
-        op = row.operator("bim.add_annotation", text="Text", icon="SMALL_CAPS")
-        op.object_type = "TEXT"
-        op.data_type = "empty"
-        op = row.operator("bim.add_annotation", text="Leader", icon="TRACKING_BACKWARDS")
-        op.object_type = "TEXT_LEADER"
-        op.data_type = "curve"
-
-        row = layout.row(align=True)
-        op = row.operator("bim.add_annotation", text="Stair Arrow", icon="SCREEN_BACK")
-        op.object_type = "STAIR_ARROW"
-        op.data_type = "curve"
-        op = row.operator("bim.add_annotation", text="Hidden", icon="CON_TRACKTO")
-        op.object_type = "HIDDEN_LINE"
-        op.data_type = "mesh"
-
-        row = layout.row(align=True)
-        op = row.operator("bim.add_annotation", text="Level (Plan)", icon="SORTBYEXT")
-        op.object_type = "PLAN_LEVEL"
-        op.data_type = "curve"
-        op = row.operator("bim.add_annotation", text="Level (Section)", icon="TRIA_DOWN")
-        op.object_type = "SECTION_LEVEL"
-        op.data_type = "curve"
-
-        row = layout.row(align=True)
-        op = row.operator("bim.add_annotation", text="Breakline", icon="FCURVE")
-        op.object_type = "BREAKLINE"
-        op.data_type = "mesh"
-        op = row.operator("bim.add_annotation", text="Line", icon="MESH_MONKEY")
-        op.object_type = "LINEWORK"
-        op.data_type = "mesh"
-
-        row = layout.row(align=True)
-        op = row.operator("bim.add_annotation", text="Fill Area", icon="NODE_TEXTURE")
-        op.object_type = "FILL_AREA"
-
-        row = layout.row(align=True)
-        row.prop(self.props, "should_draw_decorations", text="Viewport Annotations")
-        row.enabled = context.scene.camera is not None
+            for literal_data in text_data["Literals"]:
+                box = self.layout.box()
+                for attribute in literal_data:
+                    row = box.row(align=True)
+                    row.label(text=attribute)
+                    row.label(text=literal_data[attribute])
 
 
 class BIM_UL_drawinglist(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname):
-        if item:
-            row = layout.row(align=True)
-            icon = "UV_FACESEL"
-            if item.target_view == "ELEVATION_VIEW":
+        if not item:
+            layout.label(text="", translate=False)
+            return
+
+        row = layout.row(align=True)
+        if item.is_drawing:
+            row.label(text="", icon="BLANK1")
+            selected_icon = "CHECKBOX_HLT" if item.is_selected else "CHECKBOX_DEHLT"
+            row.prop(item, "is_selected", text="", icon=selected_icon, emboss=False)
+            row.prop(item, "name", text="", emboss=False)
+        else:
+            if item.target_view == "PLAN_VIEW":
+                icon = "UV_FACESEL"
+            elif item.target_view == "ELEVATION_VIEW":
                 icon = "UV_VERTEXSEL"
             elif item.target_view == "SECTION_VIEW":
                 icon = "UV_EDGESEL"
@@ -440,33 +587,84 @@ class BIM_UL_drawinglist(bpy.types.UIList):
                 icon = "XRAY"
             elif item.target_view == "MODEL_VIEW":
                 icon = "SNAP_VOLUME"
+            else:
+                icon = "CLIPUV_HLT"
+            if item.is_expanded:
+                row.operator(
+                    "bim.contract_target_view", text="", emboss=False, icon="DISCLOSURE_TRI_DOWN"
+                ).target_view = item.target_view
+            else:
+                row.operator(
+                    "bim.expand_target_view", text="", emboss=False, icon="DISCLOSURE_TRI_RIGHT"
+                ).target_view = item.target_view
             row.prop(item, "name", text="", icon=icon, emboss=False)
-        else:
-            layout.label(text="", translate=False)
 
 
 class BIM_UL_sheets(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname):
-        if item:
-            row = layout.row(align=True)
-
-            if item.is_sheet:
-                if item.is_expanded:
-                    row.operator(
-                        "bim.contract_sheet", text="", emboss=False, icon="DISCLOSURE_TRI_DOWN"
-                    ).sheet = item.ifc_definition_id
-                else:
-                    row.operator(
-                        "bim.expand_sheet", text="", emboss=False, icon="DISCLOSURE_TRI_RIGHT"
-                    ).sheet = item.ifc_definition_id
-            else:
-                row.label(text="", icon="BLANK1")
-                if item.reference_type == "DRAWING":
-                    row.label(text="", icon="IMAGE_DATA")
-                elif item.reference_type == "SCHEDULE":
-                    row.label(text="", icon="LONGDISPLAY")
-
-            name = "{} - {}".format(item.identification or "X", item.name or "Unnamed")
-            row.label(text=name)
-        else:
+        if not item:
             layout.label(text="", translate=False)
+            return
+
+        row = layout.row(align=True)
+        if item.is_sheet:
+            if item.is_expanded:
+                row.operator(
+                    "bim.contract_sheet", text="", emboss=False, icon="DISCLOSURE_TRI_DOWN"
+                ).sheet = item.ifc_definition_id
+            else:
+                row.operator(
+                    "bim.expand_sheet", text="", emboss=False, icon="DISCLOSURE_TRI_RIGHT"
+                ).sheet = item.ifc_definition_id
+
+            row.label(text=f"{item.identification} - {item.name}")
+        else:
+            row.label(text="", icon="BLANK1")
+            if item.reference_type == "DRAWING":
+                row.label(text="", icon="IMAGE_DATA")
+            elif item.reference_type == "SCHEDULE":
+                row.label(text="", icon="LONGDISPLAY")
+            elif item.reference_type == "TITLEBLOCK":
+                row.label(text="", icon="MENU_PANEL")
+            elif item.reference_type == "REVISION":
+                row.label(text="", icon="RECOVER_LAST")
+            elif item.reference_type == "REFERENCE":
+                row.label(text="", icon="IMAGE_REFERENCE")
+
+            if item.identification:
+                name = f"{item.identification} - {item.name or 'Unnamed'}"
+            else:
+                name = item.name or "Unnamed"
+            row.label(text=name)
+
+    def draw_filter(self, context, layout):
+        # We only need filtering, not reordering for sheets.
+        row = layout.row(align=True)
+        row.prop(self, "filter_name", text="")
+        row.prop(self, "use_filter_invert", text="", icon="ARROW_LEFTRIGHT")
+
+    def filter_items(self, context, data, propname):
+        flt_flags = []
+        flt_neworder = []
+
+        if self.filter_name:
+            filter_name = self.filter_name.lower()
+            active_sheet = None
+            for sheet in data.sheets:
+                if sheet.is_sheet:
+                    active_sheet = sheet
+                    active_sheet_index = len(flt_flags)
+                if filter_name in sheet.name.lower() or filter_name in sheet.identification.lower():
+                    flt_flags.append(self.bitflag_filter_item)
+                    if not sheet.is_sheet:
+                        flt_flags[active_sheet_index] = self.bitflag_filter_item
+                else:
+                    flt_flags.append(0)
+
+        if not flt_flags:
+            return flt_flags, flt_neworder
+        return flt_flags, flt_neworder
+
+
+def add_object_button(self, context):
+    self.layout.operator("bim.add_reference_image", icon="TEXTURE", text="IFC Reference Image")

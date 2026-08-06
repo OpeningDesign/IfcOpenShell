@@ -23,9 +23,16 @@ import json
 import importlib
 import ifcopenshell
 import ifcopenshell.util.pset
-from ifcopenshell.util.doc import get_entity_doc, get_attribute_doc, get_property_set_doc, get_property_doc
-import blenderbim.bim.handler
+from ifcopenshell.util.doc import (
+    get_entity_doc,
+    get_attribute_doc,
+    get_property_set_doc,
+    get_property_doc,
+    get_predefined_type_doc,
+)
+import blenderbim.bim
 import blenderbim.bim.schema
+import blenderbim.bim.handler
 from blenderbim.bim.ifc import IfcStore
 import blenderbim.tool as tool
 from collections import defaultdict
@@ -43,51 +50,19 @@ from bpy.props import (
 
 cwd = os.path.dirname(os.path.realpath(__file__))
 
-BASE_MODULE_PATH = Path(__file__).parent
-DESCRIPTION_FILES = {
-    "PredefinedType": BASE_MODULE_PATH / "schema" / "enum_descriptions.json",
-}
-
 materialpsetnames_enum = []
 
 
-def update_preset(self, context):
-    from blenderbim.bim.data.ui.presets import presets
-
-    module_visibility = context.scene.BIMProperties.module_visibility
-    chosen_preset = context.scene.BIMProperties.ui_preset
-
-    for module in module_visibility:
-        module.is_visible = module.name in presets[chosen_preset]
+def update_tab(self, context):
+    self.alt_tab = self.previous_tab
+    self.previous_tab = self.tab
 
 
-def load_presets(self, context):
-    from blenderbim.bim.data.ui.presets import presets
-
-    return [(preset, preset, "") for preset in presets.keys()]
-
-
-def update_is_visible(self, context):
-    from blenderbim.bim import modules
-
-    # TODO: Pset depends on sequence module as an edge case.
-    if self.name == "sequence" and not self.is_visible:
-        context.scene.BIMProperties.module_visibility["pset"].is_visible = False
-
-    for cls in modules[self.name].classes:
-        if not issubclass(cls, bpy.types.Panel):
-            continue
-
-        if self.is_visible:
-            try:
-                bpy.utils.register_class(cls)
-            except:
-                pass
-        else:
-            try:
-                bpy.utils.unregister_class(cls)
-            except:
-                pass
+def update_global_tab(self, context):
+    tool.Blender.setup_tabs()
+    screen = tool.Blender.get_screen(context)
+    aprops = screen.BIMAreaProperties[screen.areas[:].index(context.area)]
+    aprops.tab = self.tab
 
 
 # If we don't cache strings, accents get mangled due to a Blender bug
@@ -105,29 +80,7 @@ def cache_string(s):
 cache_string.data = {}
 
 
-def get_ifc_entity_docs(ifc_entity):
-    schema = tool.Ifc.get_schema()
-    if schema is not None:
-        return get_entity_doc(schema, ifc_entity)
-
-
-def get_ifc_entity_description(ifc_entity):
-    docs = get_ifc_entity_docs(ifc_entity)
-    return docs.get("description", "") if docs is not None else ""
-
-
-def get_ifc_entity_doc_url(ifc_entity):
-    docs = get_ifc_entity_docs(ifc_entity)
-    return docs.get("spec_url", "") if docs is not None else ""
-
-
-def get_predefined_type_descriptions(ifc_class_enum):
-    with open(DESCRIPTION_FILES["PredefinedType"], "r") as fi:
-        docs = json.load(fi)
-    return docs.get(ifc_class_enum, None) or {}
-
-
-def getAttributeEnumValues(prop, context):
+def get_attribute_enum_values(prop, context):
     # Support weird buildingSMART dictionary mappings which behave like enums
     items = []
     data = json.loads(prop.enum_items)
@@ -150,6 +103,9 @@ def getAttributeEnumValues(prop, context):
                     "",
                 )
             )
+
+    if prop.enum_descriptions:
+        items = [(identifier, name, prop.enum_descriptions[i].name) for i, (identifier, name, _) in enumerate(items)]
 
     return items
 
@@ -191,6 +147,18 @@ def update_section_color(self, context):
         pass
 
 
+def update_section_line_decorator(self, context):
+    compare_node_group = bpy.data.node_groups.get("Section Compare")
+    if compare_node_group is None:
+        return
+    for node in compare_node_group.nodes:
+        if not hasattr(node, "operation"):
+            continue
+        if node.operation == "COMPARE":
+            node.inputs[2].default_value = self.section_line_decorator_width
+            break
+
+
 class StrProperty(PropertyGroup):
     pass
 
@@ -199,7 +167,7 @@ class ObjProperty(PropertyGroup):
     obj: bpy.props.PointerProperty(type=bpy.types.Object)
 
 
-def updateAttributeValue(self, context):
+def update_attribute_value(self, context):
     value_name = self.get_value_name()
     if value_name:
         value_names = [value_name]
@@ -213,23 +181,99 @@ def updateAttributeValue(self, context):
             self.is_null = False
 
 
+def update_is_null(self, context):
+    if not self.is_null:
+        return
+    self.string_value = ""
+    self.int_value = 0
+    self.float_value = 0
+    self.length_value = 0
+    self.bool_value = False
+    if self.is_null is not True:
+        self.is_null = True
+
+
+def set_int_value(self, new_value):
+    set_numerical_value(self, "int_value", new_value)
+
+
+def set_float_value(self, new_value):
+    set_numerical_value(self, "float_value", new_value)
+
+
+def set_numerical_value(self, value_name, new_value):
+    if self.value_min_constraint and new_value < self.value_min:
+        new_value = self.value_min
+    elif self.value_max_constraint and new_value > self.value_max:
+        new_value = self.value_max
+    self[value_name] = new_value
+
+
+def get_length_value(self):
+    si_conversion = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
+    return self.float_value * si_conversion
+
+
+def set_length_value(self, value):
+    si_conversion = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
+    self.float_value = value / si_conversion
+
+
+def get_display_name(self):
+    name = self.name
+    if not self.special_type or self.special_type == "LENGTH":
+        return name
+
+    unit_type = f"{self.special_type}UNIT"
+    project_unit = ifcopenshell.util.unit.get_project_unit(tool.Ifc.get(), unit_type)
+    unit_symbol = ifcopenshell.util.unit.get_unit_symbol(project_unit)
+    return f"{name}, {unit_symbol}"
+
+
 class Attribute(PropertyGroup):
+    tooltip = "`Right Click > IFC Description` to read the attribute description and online documentation"
     name: StringProperty(name="Name")
+    display_name: StringProperty(name="Display Name", get=get_display_name)
+    description: StringProperty(name="Description")
+    ifc_class: StringProperty(name="Ifc Class")
     data_type: StringProperty(name="Data Type")
-    string_value: StringProperty(name="Value", update=updateAttributeValue)
-    bool_value: BoolProperty(name="Value", update=updateAttributeValue)
-    int_value: IntProperty(name="Value", update=updateAttributeValue)
-    float_value: FloatProperty(name="Value", update=updateAttributeValue)
+    string_value: StringProperty(name="Value", update=update_attribute_value, description=tooltip)
+    bool_value: BoolProperty(name="Value", update=update_attribute_value, description=tooltip)
+    int_value: IntProperty(
+        name="Value",
+        description=tooltip,
+        update=update_attribute_value,
+        get=lambda self: int(self.get("int_value", 0)),
+        set=set_int_value,
+    )
+    float_value: FloatProperty(
+        name="Value",
+        description=tooltip,
+        update=update_attribute_value,
+        get=lambda self: float(self.get("float_value", 0.0)),
+        set=set_float_value,
+    )
+    length_value: FloatProperty(
+        name="Value", description=tooltip, get=get_length_value, set=set_length_value, unit="LENGTH"
+    )
     enum_items: StringProperty(name="Value")
-    enum_value: EnumProperty(items=getAttributeEnumValues, name="Value", update=updateAttributeValue)
-    is_null: BoolProperty(name="Is Null")
+    enum_descriptions: CollectionProperty(type=StrProperty)
+    enum_value: EnumProperty(items=get_attribute_enum_values, name="Value", update=update_attribute_value)
+    is_null: BoolProperty(name="Is Null", update=update_is_null)
     is_optional: BoolProperty(name="Is Optional")
     is_uri: BoolProperty(name="Is Uri", default=False)
     is_selected: BoolProperty(name="Is Selected", default=False)
+    value_min: FloatProperty(description="This is used to validate int_value and float_value")
+    value_min_constraint: BoolProperty(default=False, description="True if the numerical value has a lower bound")
+    value_max: FloatProperty(description="This is used to validate int_value and float_value")
+    value_max_constraint: BoolProperty(default=False, description="True if the numerical value has an upper bound")
+    special_type: StringProperty(name="Special Value Type", default="")
 
     def get_value(self):
-        if self.is_null:
+        if self.is_optional and self.is_null:
             return None
+        if self.data_type == "string":
+            return self.string_value.replace("\\n", "\n")
         return getattr(self, str(self.get_value_name()), None)
 
     def get_value_default(self):
@@ -244,7 +288,7 @@ class Attribute(PropertyGroup):
         elif self.data_type == "enum":
             return "0"
 
-    def get_value_name(self):
+    def get_value_name(self, display_only=False):
         if self.data_type == "string":
             return "string_value"
         elif self.data_type == "boolean":
@@ -252,6 +296,8 @@ class Attribute(PropertyGroup):
         elif self.data_type == "integer":
             return "int_value"
         elif self.data_type == "float":
+            if display_only and self.special_type == "LENGTH":
+                return "length_value"
             return "float_value"
         elif self.data_type == "enum":
             return "enum_value"
@@ -271,35 +317,67 @@ class Attribute(PropertyGroup):
         setattr(self, self.get_value_name(), value)
 
 
-class ModuleVisibility(PropertyGroup):
-    name: StringProperty(name="Name")
-    is_visible: BoolProperty(name="Value", default=True, update=update_is_visible)
+def get_tab(self, context):
+    return [
+        ("PROJECT", "Project Overview", "", blenderbim.bim.icons["IFC"].icon_id, 0),
+        ("OBJECT", "Object Information", "", "FILE_3D", 1),
+        ("GEOMETRY", "Geometry and Materials", "", "MATERIAL", 2),
+        ("DRAWINGS", "Drawings and Documents", "", "DOCUMENTS", 3),
+        ("SERVICES", "Services and Systems", "", "NETWORK_DRIVE", 4),
+        ("STRUCTURE", "Structural Analysis", "", "EDITMODE_HLT", 5),
+        ("SCHEDULING", "Costing and Scheduling", "", "NLA", 6),
+        ("FM", "Facility Management", "", "PACKAGE", 7),
+        ("QUALITY", "Quality and Coordination", "", "COMMUNITY", 8),
+        None,
+        ("BLENDER", "Blender Properties", "", "BLENDER", 9),
+    ]
+
+
+class BIMAreaProperties(PropertyGroup):
+    tab: EnumProperty(default=0, items=get_tab, name="Tab", update=update_tab)
+    previous_tab: StringProperty(default="PROJECT", name="Previous Tab")
+    alt_tab: StringProperty(default="OBJECT", name="Alt Tab")
+    active_tab: BoolProperty(default=True, name="Active Tab")
+    inactive_tab: BoolProperty(default=False, name="Inactive Tab")
+
+
+# BIMAreaProperties exists per area and is setup on load post. However, for new
+# or temporary screens, they may not be setup yet, so this global tab
+# properties is used as a fallback.
+class BIMTabProperties(PropertyGroup):
+    tab: EnumProperty(default=0, items=get_tab, name="Tab", update=update_global_tab)
+    previous_tab: StringProperty(default="PROJECT", name="Previous Tab")
+    alt_tab: StringProperty(default="OBJECT", name="Alt Tab")
+    active_tab: BoolProperty(default=True, name="Active Tab")
+    inactive_tab: BoolProperty(default=False, name="Inactive Tab")
 
 
 class BIMProperties(PropertyGroup):
-    ui_preset: EnumProperty(
-        name="UI Preset",
-        description="Select from one of the available UI presets, or configure the modules to your preference below",
-        update=update_preset,
-        items=load_presets,
-    )
-    module_visibility: CollectionProperty(name="Module Visibility", type=ModuleVisibility)
+    is_dirty: BoolProperty(name="Is Dirty", default=False)
     schema_dir: StringProperty(
         default=os.path.join(cwd, "schema") + os.path.sep, name="Schema Directory", update=update_schema_dir
     )
     data_dir: StringProperty(
         default=os.path.join(cwd, "data") + os.path.sep, name="Data Directory", update=update_data_dir
     )
+    pset_dir: StringProperty(default=os.path.join("psets") + os.path.sep, name="Default Psets Directory")
     ifc_file: StringProperty(name="IFC File", update=update_ifc_file)
     last_transaction: StringProperty(name="Last Transaction")
     should_section_selected_objects: BoolProperty(name="Section Selected Objects", default=False)
     section_plane_colour: FloatVectorProperty(
-        name="Temporary Section Cutaway Colour",
+        name="Cutaway Colour",
         subtype="COLOR",
         default=(1, 0, 0),
         min=0.0,
         max=1.0,
         update=update_section_color,
+    )
+    section_line_decorator_width: FloatProperty(
+        name="Line Decorator Width",
+        default=0.04,
+        min=0.0,
+        soft_max=1.0,
+        update=update_section_line_decorator,
     )
     area_unit: EnumProperty(
         default="SQUARE_METRE",
@@ -334,22 +412,6 @@ class BIMProperties(PropertyGroup):
         ],
         name="IFC Volume Unit",
     )
-    metric_precision: FloatProperty(default=0, name="Drawing Metric Precision")
-    imperial_precision: EnumProperty(
-        items=[
-            ("NONE", "No rounding", ""),
-            ("1", 'Nearest 1"', ""),
-            ("1/2", 'Nearest 1/2"', ""),
-            ("1/4", 'Nearest 1/4"', ""),
-            ("1/8", 'Nearest 1/8"', ""),
-            ("1/16", 'Nearest 1/16"', ""),
-            ("1/32", 'Nearest 1/32"', ""),
-            ("1/64", 'Nearest 1/64"', ""),
-            ("1/128", 'Nearest 1/128"', ""),
-            ("1/256", 'Nearest 1/256"', ""),
-        ],
-        name="Drawing Imperial Precision",
-    )
 
 
 class IfcParameter(PropertyGroup):
@@ -371,14 +433,21 @@ class GlobalId(PropertyGroup):
     name: StringProperty(name="Name")
 
 
+class BIMCollectionProperties(PropertyGroup):
+    obj: PointerProperty(type=bpy.types.Object)
+
+
 class BIMObjectProperties(PropertyGroup):
+    collection: PointerProperty(type=bpy.types.Collection)
     ifc_definition_id: IntProperty(name="IFC Definition ID")
     blender_offset_type: EnumProperty(
-        items=[(o, o, "") for o in ["NONE", "OBJECT_PLACEMENT", "CARTESIAN_POINT"]],
+        items=[(o, o, "") for o in ["NONE", "OBJECT_PLACEMENT", "CARTESIAN_POINT", "NOT_APPLICABLE"]],
         name="Blender Offset",
         default="NONE",
     )
+    cartesian_point_offset: StringProperty(name="Cartesian Point Offset")
     is_reassigning_class: BoolProperty(name="Is Reassigning Class")
+    is_renaming: BoolProperty(name="Is Renaming", default=False)
     location_checksum: StringProperty(name="Location Checksum")
     rotation_checksum: StringProperty(name="Rotation Checksum")
 
@@ -393,16 +462,43 @@ class BIMMaterialProperties(PropertyGroup):
     attributes: CollectionProperty(name="Attributes", type=Attribute)
     # In Blender, a material object can map to an IFC material, IFC surface style, or both
     ifc_style_id: IntProperty(name="IFC Style ID")
+    shading_checksum: StringProperty(name="Shading Checksum")
 
 
 class BIMMeshProperties(PropertyGroup):
     ifc_definition_id: IntProperty(name="IFC Definition ID")
     ifc_boolean_id: IntProperty(name="IFC Boolean ID")
     obj: bpy.props.PointerProperty(type=bpy.types.Object)
+    has_openings_applied: BoolProperty(name="Has Openings Applied", default=True)
     is_native: BoolProperty(name="Is Native", default=False)
     is_swept_solid: BoolProperty(name="Is Swept Solid")
     is_parametric: BoolProperty(name="Is Parametric", default=False)
-    is_profile: BoolProperty(name="Is Profile", default=False)
+    subshape_type: StringProperty(name="Subshape Type")
     ifc_definition: StringProperty(name="IFC Definition")
     ifc_parameters: CollectionProperty(name="IFC Parameters", type=IfcParameter)
     material_checksum: StringProperty(name="Material Checksum", default="[]")
+    mesh_checksum: StringProperty(name="Mesh Checksum", default="")
+    replaced_mesh: PointerProperty(type=bpy.types.Mesh, description="Original mesh to revert section cutaway")
+
+
+class BIMFacet(PropertyGroup):
+    name: StringProperty(name="Name")
+    pset: StringProperty(name="Pset")
+    value: StringProperty(name="Value")
+    type: StringProperty(name="Type")
+    comparison: EnumProperty(
+        items=[
+            ("=", "equal to", ""),
+            ("!=", "not equal to", ""),
+            (">=", "greater than or equal to", ""),
+            ("<=", "lesser than or equal to", ""),
+            (">", "greater than", ""),
+            ("<", "less than", ""),
+            ("*=", "contains", ""),
+            ("!*=", "does not contain", ""),
+        ],
+    )
+
+
+class BIMFilterGroup(PropertyGroup):
+    filters: CollectionProperty(type=BIMFacet, name="filters")

@@ -18,7 +18,7 @@
 
 
 import blenderbim.core.system as subject
-from test.core.bootstrap import ifc, system
+from test.core.bootstrap import ifc, system, spatial
 
 
 class TestLoadSystems:
@@ -62,7 +62,7 @@ class TestRemoveSystem:
 class TestEnableEditingSystem:
     def test_run(self, system):
         system.import_system_attributes("system").should_be_called()
-        system.set_active_system("system").should_be_called()
+        system.set_active_edited_system("system").should_be_called()
         subject.enable_editing_system(system, system="system")
 
 
@@ -74,41 +74,42 @@ class TestDisableEditingSystem:
 
 class TestAssignSystem:
     def test_run(self, ifc):
-        ifc.run("system.assign_system", product="product", system="system").should_be_called()
+        ifc.run("system.assign_system", products=["product"], system="system").should_be_called()
         subject.assign_system(ifc, system="system", product="product")
 
 
 class TestUnassignSystem:
     def test_run(self, ifc):
-        ifc.run("system.unassign_system", product="product", system="system").should_be_called()
+        ifc.run("system.unassign_system", products=["product"], system="system").should_be_called()
         subject.unassign_system(ifc, system="system", product="product")
 
 
 class TestSelectSystemProducts:
     def test_run(self, system):
         system.select_system_products("system").should_be_called()
+        system.set_active_system("system").should_be_called()
         subject.select_system_products(system, system="system")
 
 
 class TestShowPorts:
-    def test_run(self, ifc, system):
+    def test_run(self, ifc, system, spatial):
         ifc.get_object("element").should_be_called().will_return("obj")
         ifc.is_moved("obj").should_be_called().will_return(False)
 
         system.get_ports("element").should_be_called().will_return(["port"])
         system.load_ports("element", ["port"]).should_be_called()
-        system.select_elements(["port"]).should_be_called()
-        subject.show_ports(ifc, system, element="element")
+        spatial.select_products(["port"]).should_be_called()
+        subject.show_ports(ifc, system, spatial, element="element")
 
-    def test_syncing_locations_if_objects_moved_prior_to_showing_ports(self, ifc, system):
+    def test_syncing_locations_if_objects_moved_prior_to_showing_ports(self, ifc, system, spatial):
         ifc.get_object("element").should_be_called().will_return("obj")
         ifc.is_moved("obj").should_be_called().will_return(True)
         system.run_geometry_edit_object_placement(obj="obj").should_be_called()
 
         system.get_ports("element").should_be_called().will_return(["port"])
         system.load_ports("element", ["port"]).should_be_called()
-        system.select_elements(["port"]).should_be_called()
-        subject.show_ports(ifc, system, element="element")
+        spatial.select_products(["port"]).should_be_called()
+        subject.show_ports(ifc, system, spatial, element="element")
 
 
 class TestHidePorts:
@@ -145,7 +146,9 @@ class TestAddPort:
         system.get_ports("element").should_be_called().will_return(["port"])
         system.load_ports("element", ["port"]).should_be_called()
         system.create_empty_at_cursor_with_element_orientation("element").should_be_called().will_return("obj")
-        system.run_root_assign_class(obj="obj", ifc_class="IfcDistributionPort").should_be_called().will_return("port")
+        system.run_root_assign_class(
+            obj="obj", ifc_class="IfcDistributionPort", should_add_representation=False
+        ).should_be_called().will_return("port")
         ifc.run("system.assign_port", element="element", port="port").should_be_called()
         subject.add_port(ifc, system, element="element")
 

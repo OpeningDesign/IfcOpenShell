@@ -44,7 +44,7 @@ class TestCreateEmpty(NewFile):
 
 class TestLoadDefaultThumbnails(NewFile):
     def test_nothing(self):
-        pass # Not possible to test this headlessly
+        pass  # Not possible to test this headlessly
 
 
 class TestRunAggregateAssignObject(NewFile):
@@ -93,6 +93,9 @@ class TestSetActiveSpatialElement(NewFile):
         collection = bpy.data.collections.new("Foo")
         bpy.context.scene.collection.children.link(collection)
         collection.objects.link(obj)
+        obj.BIMObjectProperties.collection = collection
+        collection.BIMCollectionProperties.obj = obj
+
         layer = bpy.context.view_layer.layer_collection.children["Foo"]
         assert bpy.context.view_layer.active_layer_collection != layer
         subject.set_active_spatial_element(obj)
@@ -127,10 +130,10 @@ class TestSetDefaultModelingDimensions(NewFile):
         ifcopenshell.api.run("unit.assign_unit", ifc)
         subject.set_default_modeling_dimensions()
         props = bpy.context.scene.BIMModelProperties
-        assert props.extrusion_depth == 3000
-        assert props.length == 1000
+        assert props.extrusion_depth == 3
+        assert props.length == 1
         assert props.rl1 == 0
-        assert props.rl2 == 1000
-        assert props.x == 500
-        assert props.y == 500
-        assert props.z == 500
+        assert props.rl2 == 1
+        assert props.x == 0.5
+        assert props.y == 0.5
+        assert props.z == 0.5

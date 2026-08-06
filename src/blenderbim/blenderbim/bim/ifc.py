@@ -19,38 +19,46 @@
 import os
 import bpy
 import uuid
+import shutil
 import hashlib
 import zipfile
 import tempfile
+import traceback
 import ifcopenshell
+import ifcopenshell.geom
+import ifcopenshell.ifcopenshell_wrapper
+import blenderbim
 import blenderbim.bim.handler
+import blenderbim.tool as tool
 from pathlib import Path
+from blenderbim.tool.brick import BrickStore
+from typing import Set, Union, Optional
+
+
+IFC_CONNECTED_TYPE = Union[bpy.types.Material, bpy.types.Object]
 
 
 class IfcStore:
-    path = ""
-    file = None
-    schema = None
-    cache = None
-    cache_path = None
-    id_map = {}
-    guid_map = {}
-    deleted_ids = set()
-    edited_objs = set()
-    pset_template_path = ""
-    pset_template_file = None
-    classification_path = ""
-    classification_file = None
-    library_path = ""
-    library_file = None
-    element_listeners = set()
-    undo_redo_stack_objects = set()
-    undo_redo_stack_object_names = {}
+    path: str = ""
+    file: Optional[ifcopenshell.file] = None
+    schema: Optional[ifcopenshell.ifcopenshell_wrapper.schema_definition] = None
+    cache: Optional[ifcopenshell.ifcopenshell_wrapper.HdfSerializer] = None
+    cache_path: Optional[str] = None
+    id_map: dict[int, IFC_CONNECTED_TYPE] = {}
+    guid_map: dict[str, IFC_CONNECTED_TYPE] = {}
+    edited_objs: Set[bpy.types.Object] = set()
+    pset_template_path: str = ""
+    pset_template_file: Optional[ifcopenshell.file] = None
+    classification_path: str = ""
+    classification_file: Optional[ifcopenshell.file] = None
+    library_path: str = ""
+    library_file: Optional[ifcopenshell.file] = None
     current_transaction = ""
     last_transaction = ""
     history = []
     future = []
     schema_identifiers = ["IFC4", "IFC2X3", "IFC4X3"]
+    session_files: dict[str, ifcopenshell.file] = {}
 
     @staticmethod
     def purge():
@@ -61,7 +69,6 @@ class IfcStore:
         IfcStore.cache_path = None
         IfcStore.id_map = {}
         IfcStore.guid_map = {}
-        IfcStore.deleted_ids = set()
         IfcStore.edited_objs = set()
         IfcStore.pset_template_path = ""
         IfcStore.pset_template_file = None
@@ -71,6 +78,7 @@ class IfcStore:
         IfcStore.history = []
         IfcStore.future = []
         IfcStore.schema_identifiers = ["IFC4", "IFC2X3", "IFC4X3"]
+        IfcStore.session_files = {}
 
     @staticmethod
     def get_file():
@@ -81,8 +89,8 @@ class IfcStore:
             if IfcStore.path:
                 try:
                     IfcStore.load_file(IfcStore.path)
-                except:
-                    pass
+                except Exception as e:
+                    print(f"Failed to load file {IfcStore.path}. Error details: {e}")
         return IfcStore.file
 
     @staticmethod
@@ -96,7 +104,14 @@ class IfcStore:
             try:
                 IfcStore.cache = ifcopenshell.geom.serializers.hdf5(IfcStore.cache_path, cache_settings)
             except:
-                return
+                if os.path.exists(IfcStore.cache_path):
+                    os.remove(IfcStore.cache_path)
+                    try:
+                        IfcStore.cache = ifcopenshell.geom.serializers.hdf5(IfcStore.cache_path, cache_settings)
+                    except:
+                        return
+                else:
+                    return
         return IfcStore.cache
 
     @staticmethod
@@ -107,11 +122,19 @@ class IfcStore:
         ifc_hash = hashlib.md5(ifc_key.encode("utf-8")).hexdigest()
         new_cache_path = os.path.join(bpy.context.scene.BIMProperties.data_dir, "cache", f"{ifc_hash}.h5")
         IfcStore.cache = None
-        os.replace(IfcStore.cache_path, new_cache_path)
+        try:
+            shutil.move(IfcStore.cache_path, new_cache_path)
+        except PermissionError:
+            try:
+                shutil.copy2(IfcStore.cache_path, new_cache_path)
+            except PermissionError:
+                pass  # Well we tried. No cache for you!
         IfcStore.get_cache()
 
     @staticmethod
-    def load_file(path):
+    def load_file(path) -> None:
+        if not os.path.isfile(path):
+            return
         extension = path.split(".")[-1]
         if extension.lower() == "ifczip":
             with tempfile.TemporaryDirectory() as unzipped_path:
@@ -122,7 +145,9 @@ class IfcStore:
                     return
         elif extension.lower() == "ifcxml":
             IfcStore.file = ifcopenshell.file(ifcopenshell.ifcopenshell_wrapper.parse_ifcxml(path))
-        elif extension.lower() == "ifc":
+        elif bpy.context.scene.BIMProjectProperties.should_stream:
+            IfcStore.file = ifcopenshell.open(path, should_stream=True)
+        else:
             IfcStore.file = ifcopenshell.open(path)
 
     @staticmethod
@@ -136,7 +161,7 @@ class IfcStore:
         return IfcStore.schema
 
     @staticmethod
-    def get_element(id_or_guid):
+    def get_element(id_or_guid: Union[int, str]) -> IFC_CONNECTED_TYPE:
         if isinstance(id_or_guid, int):
             map_object = IfcStore.id_map
         else:
@@ -149,145 +174,55 @@ class IfcStore:
         return obj
 
     @staticmethod
-    def add_element_listener(callback):
-        IfcStore.element_listeners.add(callback)
-
-    @staticmethod
-    def track_undo_redo_stack_object_map():
-        """Keeps track of currently mapped object names, typically during undo and redo
-
-        When any Blender object is stored outside a Blender PointerProperty, such as
-        in a regular Python list, there is the likely probability that the object
-        will be invalidated when undo or redo occurs. Object invalidation seems to
-        occur whenever an object is affected during an operation.
-
-        For example, if an operator deletes a modifier on o1, then o1 will be invalidated.
-        """
-        for key, value in IfcStore.id_map.items():
-            try:
-                IfcStore.undo_redo_stack_object_names[key] = value.name
-            except:
-                continue
-
-    @staticmethod
-    def track_undo_redo_stack_selected_objects():
-        """Keeps track of selected object names, typically during undo and redo
-
-        When any Blender object is stored outside a Blender PointerProperty, such as
-        in a regular Python list, there is the likely probability that the object
-        will be invalidated when undo or redo occurs. Object invalidation seems to
-        occur for selected objects either pre/post undo/redo event, including
-        selected objects for consecutive undo/redos, and all children. This is
-        important because selected objects are often deleted from the scene.
-
-        So if I first select o1, then o2, then o3, then press undo, o3 will be
-        invalidated. If instead I press undo twice, o3 and o2 will be invalidated.
-        """
-        if bpy.context.active_object:
-            objects = set([o.name for o in bpy.context.selected_objects + [bpy.context.active_object]])
-            objects.update([o.name for o in bpy.context.active_object.children])
-        else:
-            objects = set([o.name for o in bpy.context.selected_objects])
-        for obj in bpy.context.selected_objects:
-            objects.update([o.name for o in obj.children])
-        IfcStore.undo_redo_stack_objects |= objects
-
-    @staticmethod
-    def reload_undo_redo_stack_objects():
-        """Reloads any invalidated objects after undo or redo
-
-        After an undo or redo operation, objects may have been invalidated in
-        our id_map and guid_map. Invalidated objects are typically those that
-        have been manipulated or deleted. This checks the cache of mapped and
-        selected objects prior to the operation and ensures that if the object
-        is invalidated, they are reloaded based on the object name that was
-        tracked prior to the undo / redo.
-        """
-        file = IfcStore.get_file()
-        if not file:
-            return
-
-        # First, reload objects that were selected or active
-        for name in IfcStore.undo_redo_stack_objects:
-            obj = bpy.data.objects.get(name)
-            if not obj:
-                continue
-            if not obj.BIMObjectProperties.ifc_definition_id:
-                continue
-            element = file.by_id(obj.BIMObjectProperties.ifc_definition_id)
-            data = {"id": element.id(), "obj": obj.name}
-            if hasattr(element, "GlobalId"):
-                data["guid"] = element.GlobalId
-            IfcStore.commit_link_element(data)
-
-        # Scan for any straggling invalidated objects which were indirectly affected and reload them too.
-        for key, value in IfcStore.id_map.items():
-            try:
-                value.name
-            except:
-                # TODO not so sure about this obj_name check
-                obj_name = IfcStore.undo_redo_stack_object_names.get(key, None)
-                if not obj_name:
-                    continue
-                obj = bpy.data.objects.get(obj_name)
-                if not obj or not obj.BIMObjectProperties.ifc_definition_id:
-                    continue
-                element = file.by_id(obj.BIMObjectProperties.ifc_definition_id)
-                data = {"id": element.id(), "obj": obj.name}
-                if hasattr(element, "GlobalId"):
-                    data["guid"] = element.GlobalId
-                IfcStore.commit_link_element(data)
-
-    @staticmethod
-    def relink_all_objects():
+    def relink_all_objects() -> None:
         if not IfcStore.get_file():
             return
         for obj in bpy.data.objects:
+            if obj.library:
+                continue
             IfcStore.relink_object(obj)
         for obj in bpy.data.materials:
+            if obj.library:
+                continue
             IfcStore.relink_object(obj)
 
     @staticmethod
-    def relink_object(obj):
+    def relink_object(obj: IFC_CONNECTED_TYPE) -> None:
         if not obj:
             return
         if obj.BIMObjectProperties.ifc_definition_id:
-            element = IfcStore.get_file().by_id(obj.BIMObjectProperties.ifc_definition_id)
+            try:
+                element = IfcStore.get_file().by_id(obj.BIMObjectProperties.ifc_definition_id)
+            except:
+                return
             data = {"id": element.id(), "obj": obj.name}
             if hasattr(element, "GlobalId"):
                 data["guid"] = element.GlobalId
             IfcStore.commit_link_element(data)
         if hasattr(obj, "BIMMaterialProperties") and obj.BIMMaterialProperties.ifc_style_id:
-            element = IfcStore.get_file().by_id(obj.BIMMaterialProperties.ifc_style_id)
+            try:
+                element = IfcStore.get_file().by_id(obj.BIMMaterialProperties.ifc_style_id)
+            except:
+                return
             data = {"id": element.id(), "obj": obj.name}
             IfcStore.commit_link_element(data)
 
     @staticmethod
-    def delete_element(element):
-        IfcStore.deleted_ids.add(element.id())
-        if IfcStore.history:
-            data = {"id": element.id()}
-            IfcStore.history[-1]["operations"].append(
-                {"rollback": IfcStore.rollback_delete_element, "commit": IfcStore.commit_delete_element, "data": data}
-            )
+    def link_element(element: ifcopenshell.entity_instance, obj: IFC_CONNECTED_TYPE) -> None:
+        # Please use tool.Ifc.link() instead of this method. We want to
+        # refactor this class and deprecate usage of IfcStore in favour of
+        # tools.
+        if not isinstance(obj, (bpy.types.Object, bpy.types.Material)):
+            obj.BIMMeshProperties.ifc_definition_id = element.id()
+            return
 
-    @staticmethod
-    def rollback_delete_element(data):
-        IfcStore.deleted_ids.remove(data["id"])
-
-    @staticmethod
-    def commit_delete_element(data):
-        IfcStore.deleted_ids.add(data["id"])
-
-    @staticmethod
-    def link_element(element, obj):
         existing_obj = IfcStore.id_map.get(element.id(), None)
         if existing_obj == obj:
             return
         elif existing_obj:
             try:
                 existing_obj.name
-                IfcStore.unlink_element(obj=existing_obj)
+                IfcStore.unlink_element(element=element, obj=existing_obj)
             except:
                 pass
         IfcStore.id_map[element.id()] = obj
@@ -304,10 +239,9 @@ class IfcStore:
         if isinstance(obj, bpy.types.Material):
             blenderbim.bim.handler.subscribe_to(obj, "diffuse_color", blenderbim.bim.handler.color_callback)
         elif isinstance(obj, bpy.types.Object):
-            blenderbim.bim.handler.subscribe_to(obj, "mode", blenderbim.bim.handler.mode_callback)
-
-        for listener in IfcStore.element_listeners:
-            listener(element, obj)
+            blenderbim.bim.handler.subscribe_to(
+                obj, "active_material_index", blenderbim.bim.handler.active_material_index_callback
+            )
 
         if IfcStore.history:
             data = {"id": element.id(), "guid": getattr(element, "GlobalId", None), "obj": obj.name}
@@ -329,15 +263,18 @@ class IfcStore:
         IfcStore.id_map[data["id"]] = obj
         if "guid" in data:
             IfcStore.guid_map[data["guid"]] = obj
-        blenderbim.bim.handler.subscribe_to(obj, "mode", blenderbim.bim.handler.mode_callback)
         blenderbim.bim.handler.subscribe_to(obj, "name", blenderbim.bim.handler.name_callback)
         if isinstance(obj, bpy.types.Material):
             blenderbim.bim.handler.subscribe_to(obj, "diffuse_color", blenderbim.bim.handler.color_callback)
+        elif isinstance(obj, bpy.types.Object):
+            blenderbim.bim.handler.subscribe_to(
+                obj, "active_material_index", blenderbim.bim.handler.active_material_index_callback
+            )
         # TODO Listeners are not re-registered. Does this cause nasty problems to debug later on?
         # TODO We're handling id_map and guid_map, but what about edited_objs? This might cause big problems.
 
     @staticmethod
-    def rollback_unlink_element(data):
+    def rollback_unlink_element(data) -> None:
         if "id" not in data or "obj" not in data:
             return
         obj = bpy.data.objects.get(data["obj"])
@@ -346,16 +283,18 @@ class IfcStore:
             IfcStore.guid_map[data["guid"]] = obj
 
     @staticmethod
-    def commit_unlink_element(data):
+    def commit_unlink_element(data) -> None:
         del IfcStore.id_map[data["id"]]
         if data["guid"]:
             del IfcStore.guid_map[data["guid"]]
 
     @staticmethod
-    def unlink_element(element=None, obj=None):
+    def unlink_element(
+        element: Optional[ifcopenshell.entity_instance] = None, obj: Optional[IFC_CONNECTED_TYPE] = None
+    ) -> None:
         if element is None:
             try:
-                element = IfcStore.get_file().by_id(obj.BIMObjectProperties.ifc_definition_id)
+                element = tool.Ifc.get_entity(obj)
             except:
                 pass
 
@@ -398,43 +337,56 @@ class IfcStore:
             )
 
     @staticmethod
-    def execute_ifc_operator(operator, context):
+    def execute_ifc_operator(operator: bpy.types.Operator, context: bpy.types.Context, is_invoke=False):
+        blenderbim.last_actions.append({"type": "operator", "name": operator.bl_idname})
+        bpy.context.scene.BIMProperties.is_dirty = True
         is_top_level_operator = not bool(IfcStore.current_transaction)
 
         if is_top_level_operator:
             IfcStore.begin_transaction(operator)
-            IfcStore.get_file().begin_transaction()
+            if tool.Ifc.get():
+                tool.Ifc.get().begin_transaction()
+            if BrickStore.graph is not None:  # `if BrickStore.graph` by itself takes ages.
+                BrickStore.begin_transaction()
             # This empty transaction ensures that each operator has at least one transaction
             IfcStore.add_transaction_operation(operator, rollback=lambda data: True, commit=lambda data: True)
         else:
             operator.transaction_key = IfcStore.current_transaction
 
-        result = getattr(operator, "_execute")(context)
+        try:
+            if is_invoke:
+                result = getattr(operator, "_invoke")(context, None)
+            else:
+                result = getattr(operator, "_execute")(context)
+        except:
+            blenderbim.last_error = traceback.format_exc()
+            raise
 
         if is_top_level_operator:
-            IfcStore.get_file().end_transaction()
-            IfcStore.add_transaction_operation(
-                operator, rollback=lambda d: IfcStore.get_file().undo(), commit=lambda d: IfcStore.get_file().redo()
-            )
+            if tool.Ifc.get():
+                tool.Ifc.get().end_transaction()
+                IfcStore.add_transaction_operation(
+                    operator, rollback=lambda d: tool.Ifc.get().undo(), commit=lambda d: tool.Ifc.get().redo()
+                )
+            if BrickStore.graph is not None:  # `if BrickStore.graph` by itself takes ages.
+                BrickStore.end_transaction()
             IfcStore.end_transaction(operator)
             blenderbim.bim.handler.refresh_ui_data()
 
         return result
 
     @staticmethod
-    def begin_transaction(operator):
-        IfcStore.undo_redo_stack_objects = set()
-        IfcStore.undo_redo_stack_object_names = {}
+    def begin_transaction(operator: bpy.types.Operator) -> None:
         IfcStore.current_transaction = str(uuid.uuid4())
         operator.transaction_key = IfcStore.current_transaction
 
     @staticmethod
-    def end_transaction(operator):
+    def end_transaction(operator: bpy.types.Operator) -> None:
         IfcStore.current_transaction = ""
         operator.transaction_key = ""
 
     @staticmethod
-    def add_transaction_operation(operator, rollback=None, commit=None):
+    def add_transaction_operation(operator: bpy.types.Operator, rollback=None, commit=None) -> None:
         key = getattr(operator, "transaction_key", None)
         data = getattr(operator, "transaction_data", None)
         bpy.context.scene.BIMProperties.last_transaction = key
@@ -450,19 +402,35 @@ class IfcStore:
         IfcStore.future = []
 
     @staticmethod
-    def undo():
+    def undo(until_key=None) -> None:
+        BrickStore.undo()
         if not IfcStore.history:
             return
-        event = IfcStore.history.pop()
-        for transaction in event["operations"][::-1]:
-            transaction["rollback"](transaction["data"])
-        IfcStore.future.append(event)
+
+        while IfcStore.history:
+            if IfcStore.history[-1]["key"] == until_key:
+                return
+
+            event = IfcStore.history.pop()
+            for transaction in event["operations"][::-1]:
+                transaction["rollback"](transaction["data"])
+            IfcStore.future.append(event)
 
     @staticmethod
-    def redo():
+    def redo(until_key=None) -> None:
+        BrickStore.redo()
+
         if not IfcStore.future:
             return
-        event = IfcStore.future.pop()
-        for transaction in event["operations"]:
-            transaction["commit"](transaction["data"])
-        IfcStore.history.append(event)
+
+        has_encountered_key = False
+        while IfcStore.future:
+            if has_encountered_key and IfcStore.future[-1]["key"] != until_key:
+                return
+            elif IfcStore.future[-1]["key"] == until_key:
+                has_encountered_key = True
+
+            event = IfcStore.future.pop()
+            for transaction in event["operations"]:
+                transaction["commit"](transaction["data"])
+            IfcStore.history.append(event)

@@ -18,31 +18,50 @@
 
 import ifcopenshell
 import ifcopenshell.api
+import ifcopenshell.util.system
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {
-            "product": None,
-            "system": None,
-        }
-        for key, value in settings.items():
-            self.settings[key] = value
+def assign_system(
+    file: ifcopenshell.file,
+    products: list[ifcopenshell.entity_instance],
+    system: ifcopenshell.entity_instance,
+) -> None:
+    """Assigns distribution elements to a system
 
-    def execute(self):
-        if not self.settings["system"].IsGroupedBy:
-            return self.file.create_entity(
-                "IfcRelAssignsToGroup",
-                **{
-                    "GlobalId": ifcopenshell.guid.new(),
-                    "OwnerHistory": ifcopenshell.api.run("owner.create_owner_history", self.file),
-                    "RelatedObjects": [self.settings["product"]],
-                    "RelatingGroup": self.settings["system"],
-                }
-            )
-        rel = self.settings["system"].IsGroupedBy[0]
-        related_objects = set(rel.RelatedObjects) or set()
-        related_objects.add(self.settings["product"])
-        rel.RelatedObjects = list(related_objects)
-        ifcopenshell.api.run("owner.update_owner_history", self.file, **{"element": rel})
+    Note that it is not necessary to assign distribution ports to a system.
+
+    :param products: The list of IfcDistributionElements to assign to the system.
+    :type products: list[ifcopenshell.entity_instance]
+    :param system: The IfcSystem you want to assign the element to.
+    :type system: ifcopenshell.entity_instance
+    :return: The IfcRelAssignsToGroup relationship
+        or `None` if `products` was empty list.
+    :rtype: [ifcopenshell.entity_instance, None]
+
+    Example:
+
+    .. code:: python
+
+        # A completely empty distribution system
+        system = ifcopenshell.api.run("system.add_system", model)
+
+        # Create a duct
+        duct = ifcopenshell.api.run("root.create_entity", model,
+            ifc_class="IfcDuctSegment", predefined_type="RIGIDSEGMENT")
+
+        # This duct is part of the system
+        ifcopenshell.api.run("system.assign_system", model, products=[duct], system=system)
+    """
+    settings = {
+        "products": products,
+        "system": system,
+    }
+
+    system = settings["system"]
+    products = settings["products"]
+
+    if not all(ifcopenshell.util.system.is_assignable(failed_product := product, system) for product in products):
+        raise TypeError(f"You cannot assign an {failed_product.is_a()} to an {system.is_a()}")
+
+    rel = ifcopenshell.api.run("group.assign_group", file, products=products, group=system)
+    return rel

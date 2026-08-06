@@ -17,16 +17,53 @@
 # along with BlenderBIM Add-on.  If not, see <http://www.gnu.org/licenses/>.
 
 import bpy
-from . import handler, prop, ui, grid, product, wall, slab, stair, opening, pie, workspace, profile
+from . import (
+    handler,
+    prop,
+    ui,
+    grid,
+    array,
+    product,
+    wall,
+    roof,
+    slab,
+    space,
+    covering,
+    stair,
+    window,
+    opening,
+    mep,
+    pie,
+    workspace,
+    profile,
+    sverchok_modifier,
+    door,
+    railing,
+    roof,
+    mep,
+)
 
 classes = (
+    array.AddArray,
+    array.DisableEditingArray,
+    array.EditArray,
+    array.EnableEditingArray,
+    array.ApplyArray,
+    array.RemoveArray,
+    array.SelectArrayParent,
+    array.SelectAllArrayObjects,
+    array.Input3DCursorXArray,
+    array.Input3DCursorYArray,
+    array.Input3DCursorZArray,
     product.AddConstrTypeInstance,
+    product.AddDefaultType,
     product.AddEmptyType,
     product.AlignProduct,
     product.ChangeTypePage,
-    product.DisplayConstrTypes,
+    product.DisableAddType,
+    product.EnableAddType,
     product.LoadTypeThumbnails,
-    product.ReinvokeOperator,
+    product.MirrorElements,
     workspace.Hotkey,
     wall.AlignWall,
     wall.ChangeExtrusionDepth,
@@ -42,6 +79,7 @@ classes = (
     opening.AddPotentialHalfSpaceSolid,
     opening.AddPotentialOpening,
     opening.EditOpenings,
+    opening.CloneOpening,
     opening.FlipFill,
     opening.HideBooleans,
     opening.HideOpenings,
@@ -51,9 +89,14 @@ classes = (
     opening.ShowOpenings,
     profile.ChangeCardinalPoint,
     profile.ChangeProfileDepth,
+    profile.DisableEditingExtrusionAxis,
+    profile.EditExtrusionAxis,
+    profile.EnableEditingExtrusionAxis,
     profile.ExtendProfile,
     profile.RecalculateProfile,
     profile.Rotate90,
+    profile.PatchNonParametricMepSegment,
+    roof.GenerateHippedRoof,
     slab.DisableEditingExtrusionProfile,
     slab.DisableEditingSketchExtrusionProfile,
     slab.EditExtrusionProfile,
@@ -62,22 +105,88 @@ classes = (
     slab.EnableEditingSketchExtrusionProfile,
     slab.ResetVertex,
     slab.SetArcIndex,
-    prop.ConstrTypeInfo,
-    prop.ConstrClassInfo,
-    prop.ConstrBrowserState,
+    space.GenerateSpace,
+    space.GenerateSpacesFromWalls,
+    covering.AddInstanceFlooringCoveringsFromWalls,
+    covering.AddInstanceCeilingCoveringsFromWalls,
+    covering.AddInstanceFlooringCoveringFromCursor,
+    covering.AddInstanceCeilingCoveringFromCursor,
+    covering.RegenSelectedCoveringObject,
+    space.ToggleSpaceVisibility,
+    space.ToggleHideSpaces,
+    mep.FitFlowSegments,
+    mep.RegenerateDistributionElement,
     prop.BIMModelProperties,
-    ui.BIM_PT_authoring,
-    ui.DisplayConstrTypesUI,
+    prop.BIMArrayProperties,
+    prop.BIMStairProperties,
+    prop.BIMSverchokProperties,
+    prop.BIMWindowProperties,
+    prop.BIMDoorProperties,
+    prop.BIMRailingProperties,
+    prop.BIMRoofProperties,
+    ui.BIM_PT_array,
+    ui.BIM_PT_stair,
+    ui.BIM_PT_sverchok,
+    ui.BIM_PT_window,
+    ui.BIM_PT_door,
+    ui.BIM_PT_railing,
+    ui.BIM_PT_roof,
     ui.LaunchTypeManager,
-    ui.HelpConstrTypes,
     ui.BIM_MT_model,
+    ui.BIM_PT_Grids,
     grid.BIM_OT_add_object,
     stair.BIM_OT_add_object,
+    stair.BIM_OT_add_clever_stair,
+    stair.AddStair,
+    stair.CancelEditingStair,
+    stair.FinishEditingStair,
+    stair.EnableEditingStair,
+    stair.RemoveStair,
     pie.OpenPieClass,
     pie.PieUpdateContainer,
     pie.PieAddOpening,
     pie.VIEW3D_MT_PIE_bim,
     pie.VIEW3D_MT_PIE_bim_class,
+    sverchok_modifier.CreateNewSverchokGraph,
+    sverchok_modifier.UpdateDataFromSverchok,
+    sverchok_modifier.DeleteSverchokGraph,
+    sverchok_modifier.ImportSverchokGraph,
+    sverchok_modifier.ExportSverchokGraph,
+    window.BIM_OT_add_window,
+    window.AddWindow,
+    window.CancelEditingWindow,
+    window.FinishEditingWindow,
+    window.EnableEditingWindow,
+    window.RemoveWindow,
+    door.BIM_OT_add_door,
+    door.AddDoor,
+    door.CancelEditingDoor,
+    door.FinishEditingDoor,
+    door.EnableEditingDoor,
+    door.RemoveDoor,
+    railing.BIM_OT_add_railing,
+    railing.AddRailing,
+    railing.CancelEditingRailing,
+    railing.FinishEditingRailing,
+    railing.FlipRailingPathOrder,
+    railing.EnableEditingRailing,
+    railing.CancelEditingRailingPath,
+    railing.FinishEditingRailingPath,
+    railing.EnableEditingRailingPath,
+    railing.RemoveRailing,
+    roof.BIM_OT_add_roof,
+    roof.AddRoof,
+    roof.CancelEditingRoof,
+    roof.FinishEditingRoof,
+    roof.EnableEditingRoof,
+    roof.CancelEditingRoofPath,
+    roof.FinishEditingRoofPath,
+    roof.EnableEditingRoofPath,
+    roof.RemoveRoof,
+    roof.SetGableRoofEdgeAngle,
+    mep.MEPAddObstruction,
+    mep.MEPAddTransition,
+    mep.MEPAddBend,
 )
 
 addon_keymaps = []
@@ -85,10 +194,28 @@ addon_keymaps = []
 
 def register():
     if not bpy.app.background:
-        bpy.utils.register_tool(workspace.BimTool, after={"builtin.scale_cage"}, separator=True, group=True)
+        bpy.utils.register_tool(workspace.WallTool, after={"bim.explore_tool"}, separator=True, group=False)
+        bpy.utils.register_tool(workspace.SlabTool, after={"bim.wall_tool"}, separator=False, group=False)
+        bpy.utils.register_tool(workspace.DoorTool, after={"bim.slab_tool"}, separator=False, group=False)
+        bpy.utils.register_tool(workspace.WindowTool, after={"bim.door_tool"}, separator=False, group=False)
+        bpy.utils.register_tool(workspace.ColumnTool, after={"bim.window_tool"}, separator=False, group=False)
+        bpy.utils.register_tool(workspace.BeamTool, after={"bim.column_tool"}, separator=False, group=False)
+        bpy.utils.register_tool(workspace.BimTool, after={"bim.beam_tool"}, separator=False, group=False)
+        bpy.utils.register_tool(workspace.DuctTool, after={"bim.beam_tool"}, separator=False, group=True)
+        bpy.utils.register_tool(workspace.PipeTool, after={"bim.duct_tool"}, separator=False, group=False)
+        bpy.utils.register_tool(workspace.CableCarrierTool, after={"bim.pipe_tool"}, separator=False, group=False)
+        bpy.utils.register_tool(workspace.CableTool, after={"bim.cable_carrier_tool"}, separator=False, group=False)
+
     bpy.types.Scene.BIMModelProperties = bpy.props.PointerProperty(type=prop.BIMModelProperties)
-    bpy.types.VIEW3D_MT_mesh_add.append(grid.add_object_button)
-    bpy.types.VIEW3D_MT_mesh_add.append(stair.add_object_button)
+    bpy.types.Object.BIMArrayProperties = bpy.props.PointerProperty(type=prop.BIMArrayProperties)
+    bpy.types.Object.BIMStairProperties = bpy.props.PointerProperty(type=prop.BIMStairProperties)
+    bpy.types.Object.BIMSverchokProperties = bpy.props.PointerProperty(type=prop.BIMSverchokProperties)
+    bpy.types.Object.BIMWindowProperties = bpy.props.PointerProperty(type=prop.BIMWindowProperties)
+    bpy.types.Object.BIMDoorProperties = bpy.props.PointerProperty(type=prop.BIMDoorProperties)
+    bpy.types.Object.BIMRailingProperties = bpy.props.PointerProperty(type=prop.BIMRailingProperties)
+    bpy.types.Object.BIMRoofProperties = bpy.props.PointerProperty(type=prop.BIMRoofProperties)
+
+    bpy.types.VIEW3D_MT_mesh_add.append(ui.add_mesh_object_menu)
     bpy.types.VIEW3D_MT_add.append(ui.add_menu)
     bpy.app.handlers.load_post.append(handler.load_post)
     wm = bpy.context.window_manager
@@ -101,11 +228,27 @@ def register():
 
 def unregister():
     if not bpy.app.background:
+        bpy.utils.unregister_tool(workspace.WallTool)
+        bpy.utils.unregister_tool(workspace.SlabTool)
+        bpy.utils.unregister_tool(workspace.DoorTool)
+        bpy.utils.unregister_tool(workspace.WindowTool)
+        bpy.utils.unregister_tool(workspace.ColumnTool)
+        bpy.utils.unregister_tool(workspace.BeamTool)
+        bpy.utils.unregister_tool(workspace.DuctTool)
+        bpy.utils.unregister_tool(workspace.PipeTool)
+        bpy.utils.unregister_tool(workspace.CableCarrierTool)
+        bpy.utils.unregister_tool(workspace.CableTool)
         bpy.utils.unregister_tool(workspace.BimTool)
     del bpy.types.Scene.BIMModelProperties
+    del bpy.types.Object.BIMArrayProperties
+    del bpy.types.Object.BIMStairProperties
+    del bpy.types.Object.BIMSverchokProperties
+    del bpy.types.Object.BIMWindowProperties
+    del bpy.types.Object.BIMDoorProperties
+    del bpy.types.Object.BIMRailingProperties
+    del bpy.types.Object.BIMRoofProperties
     bpy.app.handlers.load_post.remove(handler.load_post)
-    bpy.types.VIEW3D_MT_mesh_add.remove(grid.add_object_button)
-    bpy.types.VIEW3D_MT_mesh_add.remove(stair.add_object_button)
+    bpy.types.VIEW3D_MT_mesh_add.remove(ui.add_mesh_object_menu)
     bpy.types.VIEW3D_MT_add.remove(ui.add_menu)
     wm = bpy.context.window_manager
     kc = wm.keyconfigs.addon

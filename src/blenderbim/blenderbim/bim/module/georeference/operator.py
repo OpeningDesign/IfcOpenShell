@@ -76,7 +76,7 @@ class SetIfcGridNorth(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.set_ifc_grid_north"
     bl_label = "Set IFC Grid North"
     bl_options = {"REGISTER", "UNDO"}
-    bl_description = "Set IFC grid north"
+    bl_description = "Set IFC grid north based on current Blender North Offset"
 
     def _execute(self, context):
         core.set_ifc_grid_north(tool.Georeference)
@@ -86,7 +86,7 @@ class SetBlenderGridNorth(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.set_blender_grid_north"
     bl_label = "Set Blender Grid North"
     bl_options = {"REGISTER", "UNDO"}
-    bl_description = "Set Blender grid north"
+    bl_description = "Set Blender North Offset based on current IFC grid north"
 
     def _execute(self, context):
         core.set_blender_grid_north(tool.Georeference)
@@ -110,7 +110,7 @@ class SetCursorLocation(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.set_cursor_location"
     bl_label = "Set Cursor Location"
     bl_options = {"REGISTER", "UNDO"}
-    bl_description = "Move curson location to the specified coordinates"
+    bl_description = "Move cursor location to the specified coordinates"
 
     @classmethod
     def poll(cls, context):
@@ -125,7 +125,7 @@ class SetIfcTrueNorth(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.set_ifc_true_north"
     bl_label = "Set IFC True North"
     bl_options = {"REGISTER", "UNDO"}
-    bl_description = "Set IFC True north"
+    bl_description = "Set IFC true north based on current Blender North Offset"
 
     def _execute(self, context):
         core.set_ifc_true_north(tool.Georeference)
@@ -135,7 +135,7 @@ class SetBlenderTrueNorth(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.set_blender_true_north"
     bl_label = "Set Blender True North"
     bl_options = {"REGISTER", "UNDO"}
-    bl_description = "Set Blender true north"
+    bl_description = "Set Blender North Offset based on current IFC true north"
 
     def _execute(self, context):
         core.set_blender_true_north(tool.Georeference)
@@ -171,3 +171,36 @@ class ConvertGlobalToLocal(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         core.convert_global_to_local(tool.Georeference)
+
+class ConvertAngleToCoordinates(bpy.types.Operator, tool.Ifc.Operator):
+    bl_idname = "bim.convert_angle_to_coord"
+    bl_label = "Convert Angle To Y Axis"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Convert angle to Y axis"
+    type: bpy.props.StringProperty()
+
+    @classmethod
+    def poll(cls, context):
+        file = tool.Ifc.get()
+        props = context.scene.BIMGeoreferenceProperties
+        return file and (props.angle_degree_input_x or props.angle_degree_input_y)
+
+    def _execute(self, context):
+        core.convert_angle_to_coord(tool.Georeference, type=self.type)
+
+
+class ImportPlot(bpy.types.Operator, tool.Ifc.Operator):
+    bl_idname = "bim.import_plot"
+    bl_label = "Import Plot"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Import plot"
+    filepath: bpy.props.StringProperty(subtype="FILE_PATH")
+    filter_glob: bpy.props.StringProperty(default="*.csv", options={"HIDDEN"})
+
+    def execute(self, context):
+        core.import_plot(tool.Georeference, filepath=self.filepath)
+        return {"FINISHED"}
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}

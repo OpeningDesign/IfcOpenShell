@@ -18,31 +18,63 @@
 
 import ifcopenshell
 import ifcopenshell.api
+import ifcopenshell.util.element
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {
-            "relating_product": None,
-            "related_object": None,
-        }
-        for key, value in settings.items():
-            self.settings[key] = value
+def unassign_product(
+    file: ifcopenshell.file,
+    relating_product: ifcopenshell.entity_instance,
+    related_object: ifcopenshell.entity_instance,
+) -> None:
+    """Unassigns a product and object relationship
 
-    def execute(self):
-        for rel in self.settings["related_object"].HasAssignments or []:
-            if (
-                not rel.is_a("IfcRelAssignsToProduct")
-                or rel.RelatingProduct != self.settings["relating_product"]
-            ):
-                continue
-            if len(rel.RelatedObjects) == 1:
-                return self.file.remove(rel)
-            related_objects = list(rel.RelatedObjects)
-            related_objects.remove(self.settings["related_object"])
-            rel.RelatedObjects = related_objects
-            ifcopenshell.api.run(
-                "owner.update_owner_history", self.file, **{"element": rel}
-            )
-            return rel
+    See ifcopenshell.api.sequence.assign_product for details.
+
+    :param relating_product: The IfcProduct in the relationship.
+    :type relating_product: ifcopenshell.entity_instance
+    :param related_object: The IfcTask in the relationship.
+    :type related_object: ifcopenshell.entity_instance
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        # Let's imagine we are creating a construction schedule. All tasks
+        # need to be part of a work schedule.
+        schedule = ifcopenshell.api.run("sequence.add_work_schedule", model, name="Construction Schedule A")
+
+        # Let's create a construction task. Note that the predefined type is
+        # important to distinguish types of tasks.
+        task = ifcopenshell.api.run("sequence.add_task", model,
+            work_schedule=schedule, name="Build wall", identification="A", predefined_type="CONSTRUCTION")
+
+        # Let's say we have a wall somewhere.
+        wall = ifcopenshell.api.run("root.create_entity", model, ifc_class="IfcWall")
+
+        # Let's construct that wall!
+        ifcopenshell.api.run("sequence.assign_product", relating_product=wall, related_object=task)
+
+        # Change our mind.
+        ifcopenshell.api.run("sequence.unassign_product", relating_product=wall, related_object=task)
+    """
+    settings = {
+        "relating_product": relating_product,
+        "related_object": related_object,
+    }
+
+    for rel in settings["related_object"].HasAssignments or []:
+        if not rel.is_a("IfcRelAssignsToProduct") or rel.RelatingProduct != settings["relating_product"]:
+            continue
+        if len(rel.RelatedObjects) == 1:
+            history = rel.OwnerHistory
+            file.remove(rel)
+            if history:
+                ifcopenshell.util.element.remove_deep2(file, history)
+            return
+        related_objects = list(rel.RelatedObjects)
+        related_objects.remove(settings["related_object"])
+        rel.RelatedObjects = related_objects
+        ifcopenshell.api.run("owner.update_owner_history", file, element=rel)
+        return rel

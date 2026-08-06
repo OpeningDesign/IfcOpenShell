@@ -19,6 +19,7 @@
 import os
 import bpy
 import ifcopenshell
+from ifcopenshell.util.doc import get_attribute_doc
 from blenderbim.bim.module.pset_template.data import PsetTemplatesData
 from blenderbim.bim.prop import StrProperty, Attribute
 from blenderbim.bim.ifc import IfcStore
@@ -37,9 +38,12 @@ from bpy.props import (
 
 def updatePsetTemplateFiles(self, context):
     IfcStore.pset_template_file = None
+    PsetTemplatesData.is_loaded = False
     PsetTemplatesData.data["pset_template_files"] = PsetTemplatesData.pset_template_files()
     PsetTemplatesData.data["pset_templates"] = PsetTemplatesData.pset_templates()
     PsetTemplatesData.data["prop_templates"] = PsetTemplatesData.prop_templates()
+    PsetTemplatesData.data["primary_measure_type"] = PsetTemplatesData.primary_measure_type()
+    PsetTemplatesData.data["property_template_type"] = PsetTemplatesData.property_template_type()
 
 
 def getPsetTemplateFiles(self, context):
@@ -63,6 +67,12 @@ def get_primary_measure_type(self, context):
     if not PsetTemplatesData.is_loaded:
         PsetTemplatesData.load()
     return PsetTemplatesData.data["primary_measure_type"]
+
+
+def get_property_template_type(self, context):
+    if not PsetTemplatesData.is_loaded:
+        PsetTemplatesData.load()
+    return PsetTemplatesData.data["property_template_type"]
 
 
 def get_template_type(self, context):
@@ -111,11 +121,27 @@ def get_template_type(self, context):
 
 
 class PsetTemplate(PropertyGroup):
-    global_id: StringProperty(name="Global ID")
-    name: StringProperty(name="Name")
-    description: StringProperty(name="Description")
-    template_type: EnumProperty(items=get_template_type, name="Template Type")
-    applicable_entity: StringProperty(name="Applicable Entity")
+    global_id: StringProperty(
+        name="Global ID",
+        description=get_attribute_doc("IFC4", "IfcPropertySetTemplate", "GlobalId"),
+    )
+    name: StringProperty(
+        name="Name",
+        description=get_attribute_doc("IFC4", "IfcPropertySetTemplate", "Name"),
+    )
+    description: StringProperty(
+        name="Description",
+        description=get_attribute_doc("IFC4", "IfcPropertySetTemplate", "Description"),
+    )
+    template_type: EnumProperty(
+        items=get_template_type,
+        name="Template Type",
+        description=get_attribute_doc("IFC4", "IfcPropertySetTemplate", "TemplateType"),
+    )
+    applicable_entity: StringProperty(
+        name="Applicable Entity",
+        description=get_attribute_doc("IFC4", "IfcPropertySetTemplate", "ApplicableEntity"),
+    )
 
 
 class EnumerationValues(PropertyGroup):
@@ -126,14 +152,20 @@ class EnumerationValues(PropertyGroup):
 
 
 class PropTemplate(PropertyGroup):
-    global_id: StringProperty(name="Global ID")
-    name: StringProperty(name="Name")
-    description: StringProperty(name="Description")
-    primary_measure_type: EnumProperty(items=get_primary_measure_type, name="Primary Measure Type")
-    template_type: EnumProperty(
-        items=[("P_SINGLEVALUE", "P_SINGLEVALUE", ""), ("P_ENUMERATEDVALUE", "P_ENUMERATEDVALUE", "")],
-        name="Template Type",
+    global_id: StringProperty(
+        name="Global ID",
+        description=get_attribute_doc("IFC4", "IfcPropertyTemplate", "GlobalId"),
     )
+    name: StringProperty(
+        name="Name",
+        description=get_attribute_doc("IFC4", "IfcPropertyTemplate", "Name"),
+    )
+    description: StringProperty(
+        name="Description",
+        description=get_attribute_doc("IFC4", "IfcPropertyTemplate", "Description"),
+    )
+    primary_measure_type: EnumProperty(items=get_primary_measure_type, name="Primary Measure Type")
+    template_type: EnumProperty(items=get_property_template_type, name="Template Type")
     enum_values: CollectionProperty(type=EnumerationValues)
 
     def get_value_name(self):
@@ -153,9 +185,9 @@ class BIMPsetTemplateProperties(PropertyGroup):
     pset_template_files: EnumProperty(
         items=getPsetTemplateFiles, name="Pset Template Files", update=updatePsetTemplateFiles
     )
-    pset_templates: EnumProperty(items=getPsetTemplates, name="Pset Template Files", update=updatePsetTemplates)
+    pset_templates: EnumProperty(items=getPsetTemplates, name="Pset Templates", update=updatePsetTemplates)
     active_pset_template_id: IntProperty(name="Active Pset Template Id")
     active_prop_template_id: IntProperty(name="Active Prop Template Id")
     active_pset_template: PointerProperty(type=PsetTemplate)
     active_prop_template: PointerProperty(type=PropTemplate)
-    new_template_filename: StringProperty("New TemplateFileName")
+    new_template_filename: StringProperty(name="New TemplateFileName")

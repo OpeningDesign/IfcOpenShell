@@ -15,15 +15,34 @@
 #
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
+import ifcopenshell
+from typing import Any
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"resource": None, "attributes": {}}
-        for key, value in settings.items():
-            self.settings[key] = value
+def edit_resource(file: ifcopenshell.file, resource: ifcopenshell.entity_instance, attributes: dict[str, Any]) -> None:
+    """Edits the attributes of an IfcResource
 
-    def execute(self):
-        for name, value in self.settings["attributes"].items():
-            setattr(self.settings["resource"], name, value)
+    For more information about the attributes and data types of an
+    IfcResource, consult the IFC documentation.
+
+    :param resource: The IfcResource entity you want to edit
+    :type resource: ifcopenshell.entity_instance
+    :param attributes: a dictionary of attribute names and values.
+    :type attributes: dict
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        # Add our own crew
+        crew = ifcopenshell.api.run("resource.add_resource", model, ifc_class="IfcCrewResource")
+
+        # Change the name of the resource to "Zone A Crew"
+        ifcopenshell.api.run("resource.edit_resource", model, resource=resource, attributes={"Name": "Foo"})
+    """
+    settings = {"resource": resource, "attributes": attributes}
+
+    for name, value in settings["attributes"].items():
+        setattr(settings["resource"], name, value)

@@ -41,25 +41,26 @@ utility:
 Exactly how it is run depends on the recipe. A recipe may require zero or more
 arguments which are specific to the recipe. Here's an example which runs the
 `ExtractElements` recipe, which, as the same suggests, extracts out elements.
-This recipe expects one argument, which uses the `IFC Query
-syntax <https://wiki.osarch.org/index.php?title=IfcOpenShell_code_examples#IFC_Query_Syntax>`_.
-In this example, we'll extract out all `IfcWall` elements.
+This recipe expects one argument, which uses the
+:ref:`ifcopenshell-python/selector_syntax:filtering elements` syntax.  In this
+example, we'll extract out all `IfcWall` elements.
 
 ::
 
-    $ ifcpatch -i input.ifc -o output.ifc -r ExtractElements -a ".IfcWall"
+    $ ifcpatch -i input.ifc -o output.ifc -r ExtractElements -a "IfcWall"
     $ cat output.ifc
 
-Here is a minimal example of how to use IfcDiff as a library:
+Here is a minimal example of how to use IfcPatch as a library:
 
 .. code-block:: python
 
     import ifcpatch
 
     output = ifcpatch.execute({
-        "input": ifcopenshell.open("input.ifc"),
+        "input": "input.ifc",
+        "file": ifcopenshell.open("input.ifc"),
         "recipe": "ExtractElements",
-        "arguments": [".IfcWall"],
+        "arguments": ["IfcWall"],
     })
     ifcpatch.write(output, "output.ifc")
 
@@ -75,3 +76,8 @@ Alternatively, you can package it as an executable.
 
     $ python make.py
     $ ./dist/ifcpatch
+
+Patch recipes
+-------------
+
+You can view all built-in patches in IfcPatch here: :doc:`List of IfcPatch recipes <autoapi/ifcpatch/recipes/index>`.

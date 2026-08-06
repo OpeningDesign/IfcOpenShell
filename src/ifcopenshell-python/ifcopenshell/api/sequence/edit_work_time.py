@@ -17,17 +17,53 @@
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
 
 import ifcopenshell.util.date
+from typing import Any
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"work_time": None, "attributes": {}}
-        for key, value in settings.items():
-            self.settings[key] = value
+def edit_work_time(
+    file: ifcopenshell.file,
+    work_time: ifcopenshell.entity_instance,
+    attributes: dict[str, Any],
+) -> None:
+    """Edits the attributes of an IfcWorkTime
 
-    def execute(self):
-        for name, value in self.settings["attributes"].items():
-            if value and name in ["Start", "Finish"]:
-                value = ifcopenshell.util.date.datetime2ifc(value, "IfcDate")
-            setattr(self.settings["work_time"], name, value)
+    For more information about the attributes and data types of an
+    IfcWorkTime, consult the IFC documentation.
+
+    :param work_time: The IfcWorkTime entity you want to edit
+    :type work_time: ifcopenshell.entity_instance
+    :param attributes: a dictionary of attribute names and values.
+    :type attributes: dict
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        # Let's create a new calendar.
+        calendar = ifcopenshell.api.run("sequence.add_work_calendar", model)
+
+        # Let's start defining the times that we work during the week.
+        work_time = ifcopenshell.api.run("sequence.add_work_time", model,
+            work_calendar=calendar, time_type="WorkingTimes")
+
+        # If we don't specify any recurring time periods in our work time,
+        # we need to specify a start and end date of the work time. It
+        # starts at 0:00 on the start date and 24:00 at the end date.
+        ifcopenshell.api.run("sequence.edit_work_time", model,
+            work_time=work_time, attributes={"StartDate": "2000-01-01", "FinishDate": "2000-01-02"})
+    """
+    settings = {"work_time": work_time, "attributes": attributes}
+
+    for name, value in settings["attributes"].items():
+        if name in ("Start", "StartDate"):
+            value = ifcopenshell.util.date.datetime2ifc(value, "IfcDate")
+            # 4 IfcWorktime Start
+            settings["work_time"][4] = value
+        elif name in ("Finish", "FinishDate"):
+            value = ifcopenshell.util.date.datetime2ifc(value, "IfcDate")
+            # 5 IfcWorktime Finish
+            settings["work_time"][5] = value
+        else:
+            setattr(settings["work_time"], name, value)

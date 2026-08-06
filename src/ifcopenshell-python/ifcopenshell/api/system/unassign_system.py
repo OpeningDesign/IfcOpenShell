@@ -18,26 +18,43 @@
 
 import ifcopenshell
 import ifcopenshell.api
+import ifcopenshell.util.element
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {
-            "product": None,
-            "system": None,
-        }
-        for key, value in settings.items():
-            self.settings[key] = value
+def unassign_system(
+    file: ifcopenshell.file,
+    products: list[ifcopenshell.entity_instance],
+    system: ifcopenshell.entity_instance,
+) -> None:
+    """Unassigns list of products from a system
 
-    def execute(self):
-        if not self.settings["system"].IsGroupedBy:
-            return
-        rel = self.settings["system"].IsGroupedBy[0]
-        related_objects = set(rel.RelatedObjects) or set()
-        related_objects.remove(self.settings["product"])
-        if len(related_objects):
-            rel.RelatedObjects = list(related_objects)
-            ifcopenshell.api.run("owner.update_owner_history", self.file, **{"element": rel})
-        else:
-            self.file.remove(rel)
+    :param products: The list of IfcDistributionElements to unassign from the system.
+    :type products: list[ifcopenshell.entity_instance]
+    :param system: The IfcSystem you want to unassign the element from.
+    :type system: ifcopenshell.entity_instance
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        # A completely empty distribution system
+        system = ifcopenshell.api.run("system.add_system", model)
+
+        # Create a duct
+        duct = ifcopenshell.api.run("root.create_entity", model,
+            ifc_class="IfcDuctSegment", predefined_type="RIGIDSEGMENT")
+
+        # This duct is part of the system
+        ifcopenshell.api.run("system.assign_system", model, products=[duct], system=system)
+
+        # Not anymore!
+        ifcopenshell.api.run("system.unassign_system", model, products=[duct], system=system)
+    """
+    settings = {
+        "products": products,
+        "system": system,
+    }
+
+    ifcopenshell.api.run("group.unassign_group", file, products=settings["products"], group=settings["system"])

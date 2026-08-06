@@ -35,6 +35,7 @@ import math
 import bmesh
 import mathutils.geometry
 from mathutils import Vector, Matrix, geometry
+import itertools
 
 
 VTX_PRECISION = 1.0e-5
@@ -74,6 +75,8 @@ class Cad:
         """
         > takes 2 edges, each as a tuple of two vectors
         < returns the potentially signed angle as degrees or radians
+
+        NOTE: `signed` expects both edges to be 2D (just as `Vector.angle_signed`)
         """
         if signed:
             a = (edge1[1] - edge1[0]).angle_signed(edge2[1] - edge2[0])
@@ -91,10 +94,14 @@ class Cad:
             tolerance = VTX_PRECISION
         if isinstance(x, (list, tuple)):
             for y in x:
-                if value > (y - tolerance) and value < (y + tolerance):
+                if (y + tolerance) > value > (y - tolerance):
                     return True
             return False
-        return value > (x - tolerance) and value < (x + tolerance)
+        return (x + tolerance) > value > (x - tolerance)
+
+    @classmethod
+    def are_vectors_equal(cls, v1: Vector, v2: Vector, tolerance: float = None):
+        return cls.is_x((v2 - v1).length, 0, tolerance)
 
     @classmethod
     def intersect_edges(cls, edge1, edge2):
@@ -186,6 +193,18 @@ class Cad:
             return v1 if distance_test else v2
 
     @classmethod
+    def closest_and_furthest_vectors(cls, pt, e):
+        """
+        > pt:       vector
+        > e:        2 vector tuple
+        < returns the two vectors closest to and furthest from pt.
+        """
+        if isinstance(e, tuple) and all([isinstance(co, Vector) for co in e]):
+            closest = cls.closest_vector(pt, e)
+            furthest = e[1] if closest == e[0] else e[0]
+            return closest, furthest
+
+    @classmethod
     def coords_tuple_from_edge_idx(cls, bm, idx):
         """bm is a bmesh representation"""
         return tuple(v.co for v in bm.edges[idx].verts)
@@ -226,6 +245,51 @@ class Cad:
         """returns the number of edges that a point lies on."""
         res = [cls.is_point_on_edge(pt, edge) for edge in [edges[:2], edges[2:]]]
         return len([i for i in res if i])
+
+    @classmethod
+    def get_edge_direction(cls, edge):
+        return (edge[1] - edge[0]).normalized()
+
+    @classmethod
+    def are_edges_parallel(cls, edge1, edge2):
+        edge1_dir = edge1[1] - edge1[0]
+        edge2_dir = edge2[1] - edge2[0]
+        return cls.is_x(edge1_dir.cross(edge2_dir).length_squared, 0)
+
+    @classmethod
+    def are_edges_collinear(cls, edge1, edge2):
+        if not cls.are_edges_parallel(edge1, edge2):
+            return False
+        return cls.are_edges_parallel((edge2[0], edge1[0]), edge2)
+
+    @classmethod
+    def closest_points(cls, edge1, edge2):
+        """
+        closest end points between `edge1` and `edge2`
+
+        ensures returned vectors are the exact objects
+        that were passed to the method with `edge1` and `edge2`
+
+        < returns two tuples - two closest points and two other points
+
+        first point of each tuple belongs to `edge1` and second to `edge2`
+        """
+
+        distance_squared = None
+        closest_points = None
+        for p1 in edge1:
+            for p2 in edge2:
+                cur_line = p2 - p1
+                cur_distance_squared = cur_line.dot(cur_line)
+                if distance_squared is None or cur_distance_squared < distance_squared:
+                    closest_points = (p1, p2)
+                    distance_squared = cur_distance_squared
+
+        other_points = (
+            edge1[0] if closest_points[0] == edge1[1] else edge1[1],
+            edge2[0] if closest_points[1] == edge2[1] else edge2[1],
+        )
+        return closest_points, other_points
 
     @classmethod
     def find_intersecting_edges(cls, bm, pt, idx1, idx2):
@@ -367,6 +431,7 @@ class Cad:
 
     @classmethod
     def get_center_of_arc(cls, pts, obj=None):
+        """also will convert center of arc from local space of `obj` (if it's provided)"""
         mw = obj.matrix_world if obj else None
         V = Vector
 
@@ -444,3 +509,24 @@ class Cad:
             edges = [(n, n + 1) for n in range(len(verts) - 1)]
 
         return verts, edges
+
+    @classmethod
+    def is_counter_clockwise_order(cls, A, B, C):
+        """whether A-B-C located in counter-clockwise order in 2d space"""
+        return (C.y - A.y) * (B.x - A.x) > (B.y - A.y) * (C.x - A.x)
+
+    @classmethod
+    def sign(cls, value):
+        """
+        returns:
+          0 if cls.is_x(value, 0)) \n
+          1 if value > 0 \n
+         -1 if value < 0
+        """
+        if cls.is_x(value, 0):
+            return 0
+        return 1 if value > 0 else -1
+
+    @classmethod
+    def get_basis_vector(cls, object, axis_i):
+        return object.matrix_world.col[axis_i].normalized().to_3d()

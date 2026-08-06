@@ -19,23 +19,44 @@
 import ifcopenshell.api
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"person_and_organisation": None}
-        for key, value in settings.items():
-            self.settings[key] = value
+def remove_person_and_organisation(
+    file: ifcopenshell.file, person_and_organisation: ifcopenshell.entity_instance
+) -> None:
+    """Removes a person and organisation
 
-    def execute(self):
-        for inverse in self.file.get_inverse(self.settings["person_and_organisation"]):
-            if inverse.is_a("IfcDocumentInformation"):
-                if inverse.Editors == (self.settings["person_and_organisation"],):
-                    inverse.Editors = None
-            elif inverse.is_a("IfcActor"):
-                ifcopenshell.api.run("root.remove_product", self.file, product=inverse)
-            elif inverse.is_a("IfcResourceLevelRelationship"):
-                if inverse.RelatedResourceObjects == (self.settings["person_and_organisation"],):
-                    self.file.remove(inverse)
-            elif inverse.is_a("IfcOwnerHistory"):
-                self.file.remove(inverse)
-        self.file.remove(self.settings["person_and_organisation"])
+    Note that the underlying person and organisation is not removed, only
+    the "person and organisation" group.
+
+    :param person_and_organisation: The IfcPersonAndOrganization to remove.
+    :type person_and_organisation: ifcopenshell.entity_instance
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        person = ifcopenshell.api.run("owner.add_person", model,
+            identification="lecorbycorbycorb", family_name="Curbosiar", given_name="Le")
+        organisation = ifcopenshell.api.run("owner.add_organisation", model,
+            identification="AWB", name="Architects Without Ballpens")
+
+        user = ifcopenshell.api.run("owner.add_person_and_organisation", model,
+            person=person, organisation=organisation)
+
+        ifcopenshell.api.run("owner.remove_person_and_organisation", model, person_and_organisation=user)
+    """
+    settings = {"person_and_organisation": person_and_organisation}
+
+    for inverse in file.get_inverse(settings["person_and_organisation"]):
+        if inverse.is_a("IfcDocumentInformation"):
+            if inverse.Editors == (settings["person_and_organisation"],):
+                inverse.Editors = None
+        elif inverse.is_a("IfcActor"):
+            ifcopenshell.api.run("root.remove_product", file, product=inverse)
+        elif inverse.is_a("IfcResourceLevelRelationship"):
+            if inverse.RelatedResourceObjects == (settings["person_and_organisation"],):
+                file.remove(inverse)
+        elif inverse.is_a("IfcOwnerHistory"):
+            file.remove(inverse)
+    file.remove(settings["person_and_organisation"])

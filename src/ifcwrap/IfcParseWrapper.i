@@ -54,7 +54,41 @@ private:
 %rename("add") addEntity;
 %rename("remove") removeEntity;
 
+class attribute_value_derived {};
 %{
+class attribute_value_derived {};
+%}
+
+%extend attribute_value_derived {
+	%pythoncode %{
+		def __bool__(self): return False
+		def __repr__(self): return '*'
+	%}
+}
+
+%inline %{
+static bool feature_use_attribute_value_derived = false;
+
+void set_feature(const std::string& x, PyObject* v) {
+	if (PyBool_Check(v) && x == "use_attribute_value_derived") {
+		feature_use_attribute_value_derived = v == Py_True;
+	} else {
+		throw std::runtime_error("Invalid feature specification");
+	}
+}
+
+PyObject* get_feature(const std::string& x) {
+	if (x == "use_attribute_value_derived") {
+		return PyBool_FromLong(feature_use_attribute_value_derived);
+	} else {
+		throw std::runtime_error("Invalid feature specification");
+	}
+}
+
+%}
+
+%{
+
 static const std::string& helper_fn_declaration_get_name(const IfcParse::declaration* decl) {
 	return decl->name();
 }
@@ -82,6 +116,12 @@ static IfcUtil::ArgumentType helper_fn_attribute_type(const IfcUtil::IfcBaseClas
 %}
 
 %extend IfcParse::IfcFile {
+	// Use to correlate to entity_instance.file_pointer, so that we
+	// can trace file ownership of instances on the python side.
+	size_t file_pointer() const {
+		return reinterpret_cast<size_t>($self);
+	}
+
 	IfcUtil::IfcBaseClass* by_guid(const std::string& guid) {
 		return $self->instance_by_guid(guid);
 	}
@@ -542,14 +582,20 @@ static IfcUtil::ArgumentType helper_fn_attribute_type(const IfcUtil::IfcBaseClas
 
 %inline %{
 	IfcParse::IfcFile* open(const std::string& fn) {
-		IfcParse::IfcFile* f = new IfcParse::IfcFile(fn);
+		IfcParse::IfcFile* f;
+		Py_BEGIN_ALLOW_THREADS;
+		f = new IfcParse::IfcFile(fn);
+		Py_END_ALLOW_THREADS;
 		return f;
 	}
 
     IfcParse::IfcFile* read(const std::string& data) {
 		char* copiedData = new char[data.length()];
 		memcpy(copiedData, data.c_str(), data.length());
-		IfcParse::IfcFile* f = new IfcParse::IfcFile((void *)copiedData, data.length());
+		IfcParse::IfcFile* f;
+		Py_BEGIN_ALLOW_THREADS;
+		f = new IfcParse::IfcFile((void *)copiedData, data.length());
+		Py_END_ALLOW_THREADS;
 		return f;
 	}
 

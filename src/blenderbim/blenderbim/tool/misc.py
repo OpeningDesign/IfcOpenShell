@@ -97,7 +97,9 @@ class Misc(blenderbim.core.tool.Misc):
         IfcStore.edited_objs.add(obj)
 
     @classmethod
-    def split_objects_with_cutter(cls, objs, cutter):
+    def split_objects_with_cutter(
+        cls, objs: list[bpy.types.Object], cutter: bpy.types.Object
+    ) -> list[bpy.types.Object]:
         cutter_mesh = cutter.data
 
         bm = bmesh.new()
@@ -113,17 +115,22 @@ class Misc(blenderbim.core.tool.Misc):
             new_obj = obj.copy()
             new_obj.data = obj.data.copy()
 
-            obj.users_collection[0].objects.link(new_obj)
+            for collection in obj.users_collection:
+                collection.objects.link(new_obj)
 
             mod = new_obj.modifiers.new(type="BOOLEAN", name="Boolean")
             mod.object = cutter
-            bpy.ops.object.modifier_apply({"object": new_obj}, modifier="Boolean")
+            with bpy.context.temp_override(object=new_obj):
+                bpy.ops.object.modifier_apply(modifier="Boolean")
 
             bm_flipped.to_mesh(cutter_mesh)
 
             mod = obj.modifiers.new(type="BOOLEAN", name="Boolean")
             mod.object = cutter
-            bpy.ops.object.modifier_apply({"object": obj}, modifier="Boolean")
+            with bpy.context.temp_override(object=obj):
+                bpy.ops.object.modifier_apply(modifier="Boolean")
+
+            bm.to_mesh(cutter_mesh)
 
             new_objs.append(new_obj)
 

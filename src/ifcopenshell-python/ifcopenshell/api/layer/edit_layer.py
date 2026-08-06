@@ -15,15 +15,32 @@
 #
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
+import ifcopenshell
+from typing import Any
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"layer": None, "attributes": {}}
-        for key, value in settings.items():
-            self.settings[key] = value
+def edit_layer(file: ifcopenshell.file, layer: ifcopenshell.entity_instance, attributes: dict[str, Any]) -> None:
+    """Edits the attributes of an IfcPresentationLayerAssignment
 
-    def execute(self):
-        for name, value in self.settings["attributes"].items():
-            setattr(self.settings["layer"], name, value)
+    For more information about the attributes and data types of an
+    IfcPresentationLayerAssignment, consult the IFC documentation.
+
+    :param layer: The IfcPresentationLayerAssignment entity you want to edit
+    :type layer: ifcopenshell.entity_instance
+    :param attributes: a dictionary of attribute names and values.
+    :type attributes: dict
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        layer = ifcopenshell.api.run("layer.add_layer", model, name="AI-WALL")
+        ifcopenshell.api.run("layer.edit_layer", model,
+            layer=layer, attributes={"Description": "All walls, based on the AIA standard."})
+    """
+    settings = {"layer": layer, "attributes": attributes}
+
+    for name, value in settings["attributes"].items():
+        setattr(settings["layer"], name, value)

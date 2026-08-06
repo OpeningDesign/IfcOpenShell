@@ -23,13 +23,14 @@ from blenderbim.bim.module.void.data import BooleansData, VoidsData
 
 
 class BIM_PT_voids(Panel):
-    bl_label = "IFC Voids"
+    bl_label = "Voids"
     bl_idname = "BIM_PT_voids"
     bl_options = {"DEFAULT_CLOSED"}
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
-    bl_context = "object"
-    bl_parent_id = "BIM_PT_geometry_object"
+    bl_context = "scene"
+    bl_order = 1
+    bl_parent_id = "BIM_PT_tab_geometric_relationships"
 
     @classmethod
     def poll(cls, context):
@@ -78,11 +79,14 @@ class BIM_PT_voids(Panel):
 
 
 class BIM_PT_booleans(Panel):
-    bl_label = "IFC Booleans"
+    bl_label = "Booleans"
     bl_idname = "BIM_PT_booleans"
+    bl_options = {"DEFAULT_CLOSED"}
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
-    bl_context = "data"
+    bl_context = "scene"
+    bl_order = 1
+    bl_parent_id = "BIM_PT_tab_geometric_relationships"
 
     @classmethod
     def poll(cls, context):
@@ -107,10 +111,28 @@ class BIM_PT_booleans(Panel):
 
         if context.active_object.data.BIMMeshProperties.ifc_definition_id:
             row = layout.row(align=True)
-            row.label(text=f"{BooleansData.data['total_booleans']} Booleans Found")
+            total_booleans = BooleansData.data["total_booleans"]
+            manual_booleans = BooleansData.data["manual_booleans"]
+            row.label(text=f"{len(total_booleans)} Booleans Found ({len(manual_booleans)} Manual)")
             row.operator("bim.add_boolean", text="", icon="ADD")
-            row.operator("bim.show_booleans", text="", icon="HIDE_OFF")
+            show_boolean_button = row.row(align=True)
+            show_boolean_button.operator("bim.show_booleans", text="", icon="HIDE_OFF")
+            show_boolean_button.enabled = len(total_booleans) > 0
             row.operator("bim.hide_booleans", text="", icon="HIDE_ON")
+
+            booleans_are_manual = len(manual_booleans) == len(total_booleans)
+            op = row.operator(
+                "bim.booleans_mark_as_manual", text="", icon="PINNED" if booleans_are_manual else "UNPINNED"
+            )
+            op.mark_as_manual = not booleans_are_manual
+
         elif context.active_object.data.BIMMeshProperties.ifc_boolean_id:
+            upsteam_obj = context.active_object.data.BIMMeshProperties.obj
+            upstream_obj_ifc_id = upsteam_obj.BIMObjectProperties.ifc_definition_id
+
+            row = layout.row(align=True)
+            row.label(text=upsteam_obj.name)
+            row.operator("bim.select_entity", text="", icon="RESTRICT_SELECT_OFF").ifc_id = upstream_obj_ifc_id
+
             row = layout.row()
             row.operator("bim.remove_booleans", text="Remove Boolean", icon="X")

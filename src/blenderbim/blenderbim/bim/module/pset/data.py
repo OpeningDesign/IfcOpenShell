@@ -18,7 +18,10 @@
 
 import bpy
 import ifcopenshell
+import ifcopenshell.util.doc
+import ifcopenshell.util.element
 import blenderbim.tool as tool
+import blenderbim.bim.schema
 
 
 # TODO: Should this cache belong here? Dunno. Maybe.
@@ -29,9 +32,13 @@ def refresh():
     ObjectPsetsData.is_loaded = False
     ObjectQtosData.is_loaded = False
     MaterialPsetsData.is_loaded = False
+    MaterialSetPsetsData.is_loaded = False
+    MaterialSetItemPsetsData.is_loaded = False
     TaskQtosData.is_loaded = False
     ResourceQtosData.is_loaded = False
     ResourcePsetsData.is_loaded = False
+    GroupQtosData.is_loaded = False
+    GroupPsetData.is_loaded = False
     ProfilePsetsData.is_loaded = False
     WorkSchedulePsetsData.is_loaded = False
     AddEditCustomPropertiesData.is_loaded = False
@@ -55,6 +62,15 @@ class Data:
             )
         return sorted(results, key=lambda v: v["Name"])
 
+    @classmethod
+    def format_pset_enum(cls, psets):
+        enum_items = []
+        version = tool.Ifc.get_schema()
+        for pset in psets:
+            doc = ifcopenshell.util.doc.get_property_set_doc(version, pset.Name) or {}
+            enum_items.append((pset.Name, pset.Name, doc.get("description", "")))
+        return enum_items
+
 
 class ObjectPsetsData(Data):
     data = {}
@@ -63,19 +79,50 @@ class ObjectPsetsData(Data):
     @classmethod
     def load(cls):
         cls.data = {
+            "is_occurrence": cls.is_occurrence(),
             "psets": cls.psetqtos(tool.Ifc.get_entity(bpy.context.active_object), psets_only=True),
             "inherited_psets": cls.inherited_psets(),
+            "pset_name": cls.pset_name(),
+            "qto_name": cls.qto_name(),
         }
         cls.is_loaded = True
+
+    @classmethod
+    def is_occurrence(cls):
+        return not tool.Ifc.get_entity(bpy.context.active_object).is_a("IfcTypeObject")
 
     @classmethod
     def inherited_psets(cls):
         element = tool.Ifc.get_entity(bpy.context.active_object)
         if element.is_a("IfcTypeObject"):
-            return
+            return []
         element_type = ifcopenshell.util.element.get_type(element)
         if element_type:
-            return cls.psetqtos(element_type)
+            return cls.psetqtos(element_type, psets_only=True)
+
+    @classmethod
+    def pset_name(cls):
+        obj = bpy.context.active_object
+        element = tool.Ifc.get_entity(obj)
+        if not element:
+            return []
+        psets = blenderbim.bim.schema.ifc.psetqto.get_applicable(
+            element.is_a(), ifcopenshell.util.element.get_predefined_type(element), pset_only=True
+        )
+        psetnames = cls.format_pset_enum(psets)
+        assigned_names = ifcopenshell.util.element.get_psets(element, psets_only=True, should_inherit=False).keys()
+        return [p for p in psetnames if p[0] not in assigned_names]
+
+    @classmethod
+    def qto_name(cls):
+        obj = bpy.context.active_object
+        element = tool.Ifc.get_entity(obj)
+        if not element:
+            return []
+        qtos = blenderbim.bim.schema.ifc.psetqto.get_applicable(
+            element.is_a(), ifcopenshell.util.element.get_predefined_type(element), qto_only=True
+        )
+        return cls.format_pset_enum(qtos)
 
 
 class ObjectQtosData(Data):
@@ -84,8 +131,25 @@ class ObjectQtosData(Data):
 
     @classmethod
     def load(cls):
-        cls.data = {"qtos": cls.psetqtos(tool.Ifc.get_entity(bpy.context.active_object), qtos_only=True)}
+        cls.data = {
+            "is_occurrence": cls.is_occurrence(),
+            "qtos": cls.psetqtos(tool.Ifc.get_entity(bpy.context.active_object), qtos_only=True),
+            "inherited_qsets": cls.inherited_qsets(),
+        }
         cls.is_loaded = True
+
+    @classmethod
+    def is_occurrence(cls):
+        return not tool.Ifc.get_entity(bpy.context.active_object).is_a("IfcTypeObject")
+
+    @classmethod
+    def inherited_qsets(cls):
+        element = tool.Ifc.get_entity(bpy.context.active_object)
+        if element.is_a("IfcTypeObject"):
+            return []
+        element_type = ifcopenshell.util.element.get_type(element)
+        if element_type:
+            return cls.psetqtos(element_type, qtos_only=True)
 
 
 class MaterialPsetsData(Data):
@@ -94,7 +158,62 @@ class MaterialPsetsData(Data):
 
     @classmethod
     def load(cls):
-        cls.data = {"psets": cls.psetqtos(tool.Ifc.get_entity(bpy.context.active_object.active_material))}
+        ifc_definition_id = None
+        props = bpy.context.scene.BIMMaterialProperties
+        if props.materials and props.active_material_index < len(props.materials):
+            ifc_definition_id = props.materials[props.active_material_index].ifc_definition_id
+
+        cls.data = {
+            "ifc_definition_id": ifc_definition_id,
+            "psets": cls.psetqtos(tool.Ifc.get().by_id(ifc_definition_id)),
+            "pset_name": cls.pset_name(),
+        }
+        cls.is_loaded = True
+
+    @classmethod
+    def pset_name(cls):
+        props = bpy.context.scene.BIMMaterialProperties
+        if props.materials and props.active_material_index < len(props.materials):
+            material = props.materials[props.active_material_index]
+            if material.ifc_definition_id:
+                material = tool.Ifc.get().by_id(material.ifc_definition_id)
+                category = getattr(material, "Category", None) or None
+                psets = blenderbim.bim.schema.ifc.psetqto.get_applicable("IfcMaterial", category, pset_only=True)
+                psetnames = cls.format_pset_enum(psets)
+                assigned_names = ifcopenshell.util.element.get_psets(
+                    material, psets_only=True, should_inherit=False
+                ).keys()
+                return [p for p in psetnames if p[0] not in assigned_names]
+        return []
+
+
+class MaterialSetPsetsData(Data):
+    data = {}
+    is_loaded = False
+
+    @classmethod
+    def load(cls):
+        psets = {}
+        element = tool.Ifc.get_entity(bpy.context.active_object)
+        if element:
+            material = ifcopenshell.util.element.get_material(element, should_skip_usage=True)
+            if material and "Set" in material.is_a():
+                psets = cls.psetqtos(material)
+        cls.data = {"psets": psets}
+        cls.is_loaded = True
+
+
+class MaterialSetItemPsetsData(Data):
+    data = {}
+    is_loaded = False
+
+    @classmethod
+    def load(cls):
+        psets = {}
+        ifc_definition_id = bpy.context.active_object.BIMObjectMaterialProperties.active_material_set_item_id
+        if ifc_definition_id:
+            psets = cls.psetqtos(tool.Ifc.get().by_id(ifc_definition_id))
+        cls.data = {"psets": psets}
         cls.is_loaded = True
 
 
@@ -137,6 +256,30 @@ class ResourcePsetsData(Data):
         cls.is_loaded = True
 
 
+class GroupQtosData(Data):
+    data = {}
+    is_loaded = False
+
+    @classmethod
+    def load(cls):
+        props = bpy.context.scene.BIMGroupProperties
+        ifc_definition_id = props.groups[props.active_group_index].ifc_definition_id
+        cls.data = {"qtos": cls.psetqtos(tool.Ifc.get_entity_by_id(ifc_definition_id), qtos_only=True)}
+        cls.is_loaded = True
+
+
+class GroupPsetData(Data):
+    data = {}
+    is_loaded = False
+
+    @classmethod
+    def load(cls):
+        props = bpy.context.scene.BIMGroupProperties
+        ifc_definition_id = props.groups[props.active_group_index].ifc_definition_id
+        cls.data = {"psets": cls.psetqtos(tool.Ifc.get_entity_by_id(ifc_definition_id), psets_only=True)}
+        cls.is_loaded = True
+
+
 class ProfilePsetsData(Data):
     data = {}
     is_loaded = False
@@ -155,7 +298,6 @@ class WorkSchedulePsetsData(Data):
 
     @classmethod
     def load(cls):
-        props = bpy.context.scene.WorkSchedulePsetProperties
         ifc_definition_id = bpy.context.scene.BIMWorkScheduleProperties.active_work_schedule_id
         cls.data = {"psets": cls.psetqtos(tool.Ifc.get().by_id(ifc_definition_id), psets_only=True)}
         cls.is_loaded = True
@@ -173,4 +315,8 @@ class AddEditCustomPropertiesData:
     @classmethod
     def primary_measure_type(cls):
         schema = tool.Ifc.schema()
-        return [(t, t, "") for t in sorted([d.name() for d in schema.declarations() if hasattr(d, "declared_type")])]
+        version = tool.Ifc.get_schema()
+        return [
+            (t, t, ifcopenshell.util.doc.get_type_doc(version, t).get("description", ""))
+            for t in sorted([d.name() for d in schema.declarations() if hasattr(d, "declared_type")])
+        ]

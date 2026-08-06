@@ -16,15 +16,37 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
 
-import ifcopenshell.api
+import ifcopenshell
+import ifcopenshell.util.element
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"actor": None}
-        for key, value in settings.items():
-            self.settings[key] = value
+def remove_actor(file: ifcopenshell.file, actor: ifcopenshell.entity_instance) -> None:
+    """Removes an actor
 
-    def execute(self):
-        self.file.remove(self.settings["actor"])
+    :param actor: The IfcActor to remove.
+    :type actor: ifcopenshell.entity_instance
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        # Setup an organisation with a single role
+        organisation = ifcopenshell.api.run("owner.add_organisation", model,
+            identification="AWB", name="Architects Without Ballpens")
+        role = ifcopenshell.api.run("owner.add_role", model, assigned_object=organisation)
+        ifcopenshell.api.run("owner.edit_role", model, role=role, attributes={"Role": "ARCHITECT"})
+
+        # Assign that organisation to a newly created actor
+        actor = ifcopenshell.api.run("owner.add_actor", model, actor=organisation)
+
+        # Actually we need ballpens on this project
+        ifcopenshell.api.run("owner.remove_actor", model, actor=actor)
+    """
+    settings = {"actor": actor}
+
+    history = settings["actor"].OwnerHistory
+    file.remove(settings["actor"])
+    if history:
+        ifcopenshell.util.element.remove_deep2(file, history)

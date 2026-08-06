@@ -15,16 +15,27 @@
 #
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
+import ifcopenshell
 
-import ifcopenshell.api
 
+def remove_application(file: ifcopenshell.file, application: ifcopenshell.entity_instance) -> None:
+    """Removes an application
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"application": None}
-        for key, value in settings.items():
-            self.settings[key] = value
+    Warning: removing an application may invalidate ownership histories.
+    Check whether or not the application is used anywhere prior to removal.
 
-    def execute(self):
-        self.file.remove(self.settings["application"])
+    :param address: The IfcApplication to remove.
+    :type address: ifcopenshell.entity_instance
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        application = ifcopenshell.api.run("owner.add_application", model)
+        ifcopenshell.api.run("owner.remove_address", model, application=application)
+    """
+    settings = {"application": application}
+
+    file.remove(settings["application"])

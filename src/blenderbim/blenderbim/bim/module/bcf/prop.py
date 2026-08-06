@@ -41,37 +41,37 @@ def purge():
 
 
 def updateBcfReferenceLink(self, context):
-    if context.scene.BCFProperties.is_loaded:
+    if bcfstore.BcfStore.get_bcfxml():
         bpy.ops.bim.edit_bcf_reference_links()
 
 
 def updateBcfLabel(self, context):
-    if context.scene.BCFProperties.is_loaded:
+    if bcfstore.BcfStore.get_bcfxml():
         bpy.ops.bim.edit_bcf_labels()
 
 
 def updateBcfProjectName(self, context):
-    if self.is_loaded:
+    if bcfstore.BcfStore.get_bcfxml():
         bpy.ops.bim.edit_bcf_project_name()
 
 
 def updateBcfAuthor(self, context):
-    if self.is_loaded:
+    if bcfstore.BcfStore.get_bcfxml():
         bpy.ops.bim.edit_bcf_author()
 
 
 def updateBcfTopicName(self, context):
-    if context.scene.BCFProperties.is_loaded:
+    if bcfstore.BcfStore.get_bcfxml():
         bpy.ops.bim.edit_bcf_topic_name()
 
 
 def updateBcfTopicIsEditable(self, context):
-    if context.scene.BCFProperties.is_loaded and not self.is_editable:
+    if bcfstore.BcfStore.get_bcfxml() and not self.is_editable:
         bpy.ops.bim.edit_bcf_topic()
 
 
 def updateBcfCommentIsEditable(self, context):
-    if context.scene.BCFProperties.is_loaded and not self.is_editable:
+    if bcfstore.BcfStore.get_bcfxml() and not self.is_editable:
         bpy.ops.bim.edit_bcf_comment(comment_guid=self.name)
 
 
@@ -95,8 +95,8 @@ def getBcfViewpoints(self, context, force_update=False):
         props = context.scene.BCFProperties
         bcfxml = bcfstore.BcfStore.get_bcfxml()
         topic = props.active_topic
-        viewpoints = bcfxml.get_viewpoints(topic.name) if topic else {}
-        bcfviewpoints_enum.extend([(v, f"Viewpoint {i+1}", "") for i, v in enumerate(viewpoints.keys())])
+        viewpoints = bcfxml.topics[topic.name].viewpoints.keys() if topic else []
+        bcfviewpoints_enum.extend([(v, f"Viewpoint {i+1}", "") for i, v in enumerate(viewpoints)])
     return bcfviewpoints_enum
 
 
@@ -151,7 +151,7 @@ class BcfTopic(PropertyGroup):
 
 
 class BCFProperties(PropertyGroup):
-    is_loaded: BoolProperty(name="Is Loaded", default=False)
+    bcf_file: StringProperty(name="BCF File")
     comment_text_width: IntProperty(name="Comment Text Width", default=40)
     name: StringProperty(default="", name="Project Name", update=updateBcfProjectName)
     author: StringProperty(default="john@doe.com", name="Author Email", update=updateBcfAuthor)

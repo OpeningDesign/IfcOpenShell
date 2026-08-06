@@ -28,6 +28,7 @@ Scenario: Resize to storey
     Given an empty IFC project
     And I add a cube
     And the object "Cube" is selected
+    And I set "scene.BIMRootProperties.ifc_product" to "IfcElement"
     And I set "scene.BIMRootProperties.ifc_class" to "IfcWall"
     And I press "bim.assign_class"
     And the object "IfcWall/Cube" is selected
@@ -40,6 +41,7 @@ Scenario: Split along edge
     Given an empty IFC project
     And I add a cube
     And the object "Cube" is selected
+    And I set "scene.BIMRootProperties.ifc_product" to "IfcElement"
     And I set "scene.BIMRootProperties.ifc_class" to "IfcWall"
     And I press "bim.assign_class"
     And I add a plane of size "4" at "0,0,0"
@@ -48,3 +50,10 @@ Scenario: Split along edge
     When I press "bim.split_along_edge"
     Then the object "IfcWall/Cube" is an "IfcWall"
     And the object "IfcWall/Cube.001" is an "IfcWall"
+
+Scenario: Enabling and disabling IFC Sverchok
+    Given an empty IFC project
+    And I press "preferences.addon_enable(module="sverchok")"
+    And I press "preferences.addon_enable(module="ifcsverchok")"
+    And I press "preferences.addon_disable(module="sverchok")"
+    And I press "preferences.addon_disable(module="ifcsverchok")"

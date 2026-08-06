@@ -17,17 +17,53 @@
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
 
 import ifcopenshell.api
+import ifcopenshell.util.element
+from typing import Any
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"product": None, "attributes": {}}
-        for key, value in settings.items():
-            self.settings[key] = value
+def edit_attributes(file: ifcopenshell.file, product: ifcopenshell.entity_instance, attributes: dict[str, Any]) -> None:
+    """Edit the attributes of a product
 
-    def execute(self):
-        for name, value in self.settings["attributes"].items():
-            setattr(self.settings["product"], name, value)
-        if hasattr(self.settings["product"], "OwnerHistory"):
-            ifcopenshell.api.run("owner.update_owner_history", self.file, **{"element": self.settings["product"]})
+    All IFC entities have attributes. Normally they can be edited directly,
+    by simply assigning a new value to them. In some scenarios, you may wish
+    to also ensure that ownership history is updated. This function provides
+    that convenience.
+
+    :param product: The product you want to edit. This may be any rooted IFC
+        entity.
+    :type product: ifcopenshell.entity_instance
+    :param attributes: a dictionary of attribute names and values.
+    :type attributes: dict
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        element = ifcopenshell.api.run("root.create_entity", model, ifc_class="IfcWall")
+        ifcopenshell.api.run("attribute.edit_attributes", model,
+            product=element, attributes={"Name": "Waldo"})
+    """
+    settings = {"product": product, "attributes": attributes or {}}
+
+    for name, value in settings["attributes"].items():
+        setattr(settings["product"], name, value)
+    if hasattr(settings["product"], "PredefinedType"):
+        if hasattr(settings["product"], "ElementType"):
+            if settings["product"].ElementType is None and settings["product"].PredefinedType == "USERDEFINED":
+                settings["product"].PredefinedType = "NOTDEFINED"
+            elif settings["product"].ElementType and settings["product"].PredefinedType != "USERDEFINED":
+                settings["product"].PredefinedType = "USERDEFINED"
+        elif hasattr(settings["product"], "ObjectType"):
+            relating_type = ifcopenshell.util.element.get_type(settings["product"])
+            # Allow for None due to https://github.com/buildingSMART/IFC4.3.x-development/issues/818
+            if relating_type and relating_type.PredefinedType not in ("NOTDEFINED", None):
+                settings["product"].ObjectType = None
+                settings["product"].PredefinedType = None
+            elif settings["product"].ObjectType is None and settings["product"].PredefinedType == "USERDEFINED":
+                settings["product"].PredefinedType = "NOTDEFINED"
+            elif settings["product"].ObjectType and settings["product"].PredefinedType != "USERDEFINED":
+                settings["product"].PredefinedType = "USERDEFINED"
+    if hasattr(settings["product"], "OwnerHistory"):
+        ifcopenshell.api.run("owner.update_owner_history", file, **{"element": settings["product"]})

@@ -20,54 +20,17 @@ import bpy
 import ifcopenshell.util.element
 
 import blenderbim.core.tool
+import blenderbim.core.spatial
+import blenderbim.core.aggregate
 import blenderbim.tool as tool
+from typing import Union
 
 
 class Collector(blenderbim.core.tool.Collector):
     @classmethod
-    def sync(cls, obj):
-        # This is the reverse of assign. It reads the Blender collection and figures out its IFC hierarchy
-        element = tool.Ifc.get_entity(obj)
-
-        if element.is_a("IfcProject") or element.is_a("IfcGridAxis") or element.is_a("IfcOpeningElement"):
-            return
-
-        if not obj.users_collection:
-            return
-
-        object_collection = None
-        collection_collection = None
-
-        object_collection = cls._get_own_collection(element, obj)
-        if object_collection:
-            collection_collection = cls._get_collection(element, obj)
-        else:
-            object_collection = cls._get_collection(element, obj)
-
-        parent_collection = None
-
-        if obj.users_collection != (object_collection,) and obj.users_collection[0].name != obj.name:
-            parent_collection = obj.users_collection[0]
-        elif collection_collection and collection_collection.children.find(object_collection.name) == -1:
-            for collection in bpy.data.collections:
-                if collection.children.find(obj.users_collection[0].name) != -1:
-                    parent_collection = collection
-                    break
-
-        if parent_collection:
-            parent_obj = bpy.data.objects.get(parent_collection.name)
-            parent = tool.Ifc.get_entity(parent_obj)
-            if parent:
-                # This is lazy, but works. One of these will succeed, the other will fail silently.
-                blenderbim.core.spatial.assign_container(
-                    tool.Ifc, tool.Collector, tool.Spatial, structure_obj=parent_obj, element_obj=obj
-                )
-                blenderbim.core.aggregate.assign_object(
-                    tool.Ifc, tool.Aggregate, tool.Collector, relating_obj=parent_obj, related_obj=obj
-                )
-
-    @classmethod
-    def assign(cls, obj):
+    def assign(cls, obj: bpy.types.Object) -> None:
+        """link object and it's owned collection to the proper collection
+        and unlink them from any other"""
         element = tool.Ifc.get_entity(obj)
 
         object_collection = None
@@ -79,12 +42,17 @@ class Collector(blenderbim.core.tool.Collector):
         else:
             object_collection = cls._get_collection(element, obj)
 
+        # NOTE: calling `obj.users_collection` is expensive in large projects
+        # since it's iterating over all collections under the hood
+
+        # ensure object is linked only to object_collection
         if obj.users_collection != (object_collection,):
             for collection in obj.users_collection:
                 collection.objects.unlink(obj)
             if object_collection is not None:
                 object_collection.objects.link(obj)
 
+        # ensure object_collection is linked only to collection_collection
         if collection_collection and collection_collection.children.find(object_collection.name) == -1:
             if bpy.context.scene.collection.children.find(object_collection.name) != -1:
                 bpy.context.scene.collection.children.unlink(object_collection)
@@ -93,20 +61,27 @@ class Collector(blenderbim.core.tool.Collector):
                     collection.children.unlink(object_collection)
             collection_collection.children.link(object_collection)
 
+        # If an aggregate or nested host loses all its children, it no longer needs its own collection
+        if obj.BIMObjectProperties.collection and obj.BIMObjectProperties.collection != object_collection:
+            bpy.data.collections.remove(obj.BIMObjectProperties.collection)
+
     @classmethod
-    def _get_own_collection(cls, element, obj):
+    def _get_own_collection(
+        cls, element: ifcopenshell.entity_instance, obj: bpy.types.Object
+    ) -> Union[bpy.types.Collection, None]:
+        """get or create own collection for the element if it's neccessary for it's type"""
         if element.is_a("IfcProject"):
-            return bpy.data.collections.get(obj.name, bpy.data.collections.new(obj.name))
+            return cls._create_own_collection(obj)
 
         if tool.Ifc.get_schema() == "IFC2X3":
             if element.is_a("IfcSpatialStructureElement"):
-                return bpy.data.collections.get(obj.name, bpy.data.collections.new(obj.name))
+                return cls._create_own_collection(obj)
         else:
             if element.is_a("IfcSpatialStructureElement") or element.is_a("IfcExternalSpatialStructureElement"):
-                return bpy.data.collections.get(obj.name, bpy.data.collections.new(obj.name))
+                return cls._create_own_collection(obj)
 
         if element.is_a("IfcGrid"):
-            return bpy.data.collections.get(obj.name, bpy.data.collections.new(obj.name))
+            return cls._create_own_collection(obj)
 
         if element.is_a("IfcGridAxis"):
             if element.PartOfU:
@@ -120,29 +95,32 @@ class Collector(blenderbim.core.tool.Collector):
                 axes = "WAxes"
             grid_obj = tool.Ifc.get_object(grid)
             if grid_obj:
-                grid_col = bpy.data.collections.get(grid_obj.name)
-                axes_col = [c for c in grid_col.children if axes in c.name]
-                if axes_col:
-                    return axes_col[0]
-                return bpy.data.collections.new(axes)
+                grid_col = cls._get_own_collection(grid, grid_obj)
+                axes_col = next((c for c in grid_col.children if axes in c.name), None)
+                return axes_col or bpy.data.collections.new(axes)
 
-        if element.is_a("IfcAnnotation"):
-            for rel in element.HasAssignments or []:
-                if rel.is_a("IfcRelAssignsToGroup") and rel.RelatingGroup.ObjectType == "DRAWING":
-                    name = "IfcGroup/" + rel.RelatingGroup.Name
-                    return bpy.data.collections.get(name, bpy.data.collections.new(name))
+        if element.is_a("IfcAnnotation") and element.ObjectType == "DRAWING":
+            return cls._create_own_collection(obj)
 
         if element.is_a("IfcStructuralMember"):
-            return bpy.data.collections.get("Members", bpy.data.collections.new("Members"))
+            return bpy.data.collections.get("Members") or bpy.data.collections.new("Members")
 
         if element.is_a("IfcStructuralConnection"):
-            return bpy.data.collections.get("Connections", bpy.data.collections.new("Connections"))
+            return bpy.data.collections.get("Connections") or bpy.data.collections.new("Connections")
 
         if getattr(element, "IsDecomposedBy", None):
-            return bpy.data.collections.get(obj.name, bpy.data.collections.new(obj.name))
+            return cls._create_own_collection(obj)
+
+        if getattr(element, "IsNestedBy", None):
+            if any(e for e in element.IsNestedBy[0].RelatedObjects if not e.is_a("IfcPort")):
+                return cls._create_own_collection(obj)
+
+        if getattr(element, "HasSurfaceFeatures", None):
+            return cls._create_own_collection(obj)
 
     @classmethod
-    def _get_collection(cls, element, obj):
+    def _get_collection(cls, element: ifcopenshell.entity_instance, obj: bpy.types.Object) -> bpy.types.Collection:
+        """get or create collection for the element based on it's type"""
         if element.is_a("IfcTypeObject"):
             return cls._create_project_child_collection("Types")
 
@@ -161,12 +139,18 @@ class Collector(blenderbim.core.tool.Collector):
                 axes = "WAxes"
             grid_obj = tool.Ifc.get_object(grid)
             if grid_obj:
-                return bpy.data.collections.get(grid_obj.name)
+                return grid_obj.BIMObjectProperties.collection
 
         if element.is_a("IfcAnnotation"):
+            if element.ObjectType == "DRAWING":
+                return cls._create_project_child_collection("Views")
             for rel in element.HasAssignments or []:
                 if rel.is_a("IfcRelAssignsToGroup") and rel.RelatingGroup.ObjectType == "DRAWING":
-                    return cls._create_project_child_collection("Views")
+                    for related_object in rel.RelatedObjects:
+                        if related_object.is_a("IfcAnnotation") and related_object.ObjectType == "DRAWING":
+                            drawing_obj = tool.Ifc.get_object(related_object)
+                            if drawing_obj:
+                                return drawing_obj.BIMObjectProperties.collection
 
         if element.is_a("IfcStructuralItem"):
             return cls._create_project_child_collection("StructuralItems")
@@ -175,14 +159,29 @@ class Collector(blenderbim.core.tool.Collector):
         if aggregate:
             aggregate_obj = tool.Ifc.get_object(aggregate)
             if aggregate_obj:
-                collection = bpy.data.collections.get(aggregate_obj.name)
+                collection = aggregate_obj.BIMObjectProperties.collection
+                if collection:
+                    return collection
+
+        nest = ifcopenshell.util.element.get_nest(element)
+        if nest:
+            nest_obj = tool.Ifc.get_object(nest)
+            if nest_obj:
+                collection = nest_obj.BIMObjectProperties.collection
                 if collection:
                     return collection
 
         container = ifcopenshell.util.element.get_container(element)
         if container:
             container_obj = tool.Ifc.get_object(container)
-            collection = bpy.data.collections.get(container_obj.name)
+            collection = container_obj.BIMObjectProperties.collection
+            if collection:
+                return collection
+
+        if element.is_a("IfcSurfaceFeature") and element.file.schema == "IFC4X3":
+            adherend = element.AdheresToElement[0].RelatingElement
+            adherend_obj = tool.Ifc.get_object(adherend)
+            collection = adherend_obj.BIMObjectProperties.collection
             if collection:
                 return collection
 
@@ -191,15 +190,25 @@ class Collector(blenderbim.core.tool.Collector):
 
         project_obj = tool.Ifc.get_object(tool.Ifc.get().by_type("IfcProject")[0])
         if project_obj:
-            collection = bpy.data.collections.get(project_obj.name)
-            if collection:
-                return collection
+            return project_obj.BIMObjectProperties.collection
 
     @classmethod
-    def _create_project_child_collection(cls, name):
+    def _create_project_child_collection(cls, name: str) -> bpy.types.Collection:
+        """get or create new collection inside project"""
         collection = bpy.data.collections.get(name)
         if not collection:
             collection = bpy.data.collections.new(name)
             project_obj = tool.Ifc.get_object(tool.Ifc.get().by_type("IfcProject")[0])
-            project_obj.users_collection[0].children.link(collection)
+            project_obj.BIMObjectProperties.collection.children.link(collection)
+            collection.hide_viewport = True
+        return collection
+
+    @classmethod
+    def _create_own_collection(cls, obj: bpy.types.Object) -> bpy.types.Collection:
+        """get or create own collection for the element"""
+        if obj.BIMObjectProperties.collection:
+            return obj.BIMObjectProperties.collection
+        collection = bpy.data.collections.new(obj.name)
+        obj.BIMObjectProperties.collection = collection
+        collection.BIMCollectionProperties.obj = obj
         return collection

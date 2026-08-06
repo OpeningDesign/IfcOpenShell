@@ -15,14 +15,25 @@
 #
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
+import ifcopenshell
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"layer": None}
-        for key, value in settings.items():
-            self.settings[key] = value
+def remove_layer(file: ifcopenshell.file, layer: ifcopenshell.entity_instance) -> None:
+    """Removes a layer
 
-    def execute(self):
-        self.file.remove(self.settings["layer"])
+    All representation items assigned to the layer will remain, but the
+    relationship to the layer will be removed.
+
+    :param layer: The IfcPresentationLayerAssignment entity to remove
+    :type layer: ifcopenshell.entity_instance
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        layer = ifcopenshell.api.run("layer.add_layer", model, name="AI-WALL")
+        ifcopenshell.api.run("layer.remove_layer", model, layer=layer)
+    """
+    file.remove(layer)

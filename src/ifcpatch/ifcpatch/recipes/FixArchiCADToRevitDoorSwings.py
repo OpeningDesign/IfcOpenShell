@@ -1,37 +1,66 @@
+# IfcPatch - IFC patching utiliy
+# Copyright (C) 2023 Dion Moult <dion@thinkmoult.com>
+#
+# This file is part of IfcPatch.
+#
+# IfcPatch is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# IfcPatch is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Lesser General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with IfcPatch.  If not, see <http://www.gnu.org/licenses/>.
+
+
 import os
 import math
 import ifcopenshell
+import ifcopenshell.geom
+import ifcopenshell.util.unit
 import ifcopenshell.util.schema
 import ifcopenshell.util.element
 
 
 class Patcher:
-    def __init__(self, src, file, logger, args=None):
+    def __init__(self, src, file, logger):
+        """Fix missing door swings in Revit when viewing ArchiCAD IFCs
+
+        ArchiCAD has the ability to store 2D data with objects like doors for
+        door swings. ArchiCAD's implementation is not 100% correct (using
+        footprint instead of annotation contexts), but otherwise not too
+        shabby.
+
+        Revit, however, is incapable of understanding this 2D representation.
+        Revit users linking in IFCs produced by ArchiCAD may experience the
+        following symptoms:
+
+        A. Invisible doors, and difficulty selecting doors
+        B. Invisible door swings, or only visible at particular view ranges
+        C. Weird arc shapes around doors
+        D. Extra lines around doors and walls
+        E. Cannot easily change visibility graphics of 2D vs 3D elements
+        F. Cannot view 2D data in a 3D view
+
+        This is caused by the perfect storm of Revit IFC bugs, which we will
+        work through methodically. For programmers interested in the details of
+        how we fix this, read the comments of the patch function.
+
+        Example:
+
+        .. code:: python
+
+            ifcpatch.execute({"input": "input.ifc", "file": model, "recipe": "FixArchiCADToRevitDoorSwings", "arguments": []})
+        """
         self.src = src
         self.file = file
         self.logger = logger
-        self.args = args
 
     def patch(self):
-        # ArchiCAD has the ability to store 2D data with objects like doors for
-        # door swings. ArchiCAD's implementation is not 100% correct (using
-        # footprint instead of annotation contexts), but otherwise not too
-        # shabby.
-        #
-        # Revit, however, is incapable of understanding this 2D representation.
-        # Revit users linking in IFCs produced by ArchiCAD may experience the
-        # following symptoms:
-        #
-        # A. Invisible doors, and difficulty selecting doors
-        # B. Invisible door swings, or only visible at particular view ranges
-        # C. Weird arc shapes around doors
-        # D. Extra lines around doors and walls
-        # E. Cannot easily change visibility graphics of 2D vs 3D elements
-        # F. Cannot view 2D data in a 3D view
-        #
-        # This is caused by the perfect storm of Revit IFC bugs, which we will
-        # work through methodically.
-
         # Revit has the ability to switch between 3D representations and 2D
         # representations (e.g. in plan view). It does this by detecting IFC
         # representations that belong to either the Model Body representation

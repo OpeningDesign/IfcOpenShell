@@ -40,15 +40,15 @@ class LibraryGenerator:
             "root.create_entity", self.file, ifc_class="IfcProjectLibrary", name="Australian Library"
         )
         ifcopenshell.api.run(
-            "project.assign_declaration", self.file, definition=self.library, relating_context=self.project
+            "project.assign_declaration", self.file, definitions=[self.library], relating_context=self.project
         )
-        unit = ifcopenshell.api.run("unit.add_si_unit", self.file, unit_type="LENGTHUNIT", name="METRE", prefix="MILLI")
+        unit = ifcopenshell.api.run("unit.add_si_unit", self.file, unit_type="LENGTHUNIT", prefix="MILLI")
         ifcopenshell.api.run("unit.assign_unit", self.file, units=[unit])
 
         model = ifcopenshell.api.run("context.add_context", self.file, context_type="Model")
         plan = ifcopenshell.api.run("context.add_context", self.file, context_type="Plan")
         self.representations = {
-            "body": ifcopenshell.api.run(
+            "model_body": ifcopenshell.api.run(
                 "context.add_context",
                 self.file,
                 context_type="Model",
@@ -56,7 +56,7 @@ class LibraryGenerator:
                 target_view="MODEL_VIEW",
                 parent=model,
             ),
-            "annotation": ifcopenshell.api.run(
+            "plan_body": ifcopenshell.api.run(
                 "context.add_context",
                 self.file,
                 context_type="Plan",
@@ -179,16 +179,16 @@ class LibraryGenerator:
         )
         self.create_profile_type("IfcBeamType", "DEMO2", profile)
 
-        self.create_type("IfcWindowType", "DEMO1", {"body": "Window", "annotation": "Window-Annotation"})
-        self.create_type("IfcDoorType", "DEMO1", {"body": "Door", "annotation": "Door-Annotation"})
-        self.create_type("IfcFurnitureType", "BUNNY", {"body": "Bunny", "annotation": "Bunny-Annotation"})
+        self.create_type("IfcWindowType", "DEMO1", {"model_body": "Window", "plan_body": "Window-Annotation"})
+        self.create_type("IfcDoorType", "DEMO1", {"model_body": "Door", "plan_body": "Door-Annotation"})
+        self.create_type("IfcFurnitureType", "BUNNY", {"model_body": "Bunny", "plan_body": "Bunny-Annotation"})
 
         self.file.write("blenderbim-au-library.ifc")
 
     def create_layer_set_type(self, name, data):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class=data["type"], name=name)
         element.Description = data["Description"]
-        rel = ifcopenshell.api.run("material.assign_material", self.file, product=element, type="IfcMaterialLayerSet")
+        rel = ifcopenshell.api.run("material.assign_material", self.file, products=[element], type="IfcMaterialLayerSet")
         layer_set = rel.RelatingMaterial
         for layer_data in data["Layers"]:
             layer = ifcopenshell.api.run(
@@ -196,27 +196,27 @@ class LibraryGenerator:
             )
             layer.Name = layer_data[0]
             layer.LayerThickness = layer_data[2]
-        ifcopenshell.api.run("project.assign_declaration", self.file, definition=element, relating_context=self.library)
+        ifcopenshell.api.run("project.assign_declaration", self.file, definitions=[element], relating_context=self.library)
         return element
 
     def create_layer_type(self, ifc_class, name, thickness):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class=ifc_class, name=name)
-        rel = ifcopenshell.api.run("material.assign_material", self.file, product=element, type="IfcMaterialLayerSet")
+        rel = ifcopenshell.api.run("material.assign_material", self.file, products=[element], type="IfcMaterialLayerSet")
         layer_set = rel.RelatingMaterial
         layer = ifcopenshell.api.run("material.add_layer", self.file, layer_set=layer_set, material=self.materials["TBD"]["ifc"])
         layer.LayerThickness = thickness
-        ifcopenshell.api.run("project.assign_declaration", self.file, definition=element, relating_context=self.library)
+        ifcopenshell.api.run("project.assign_declaration", self.file, definitions=[element], relating_context=self.library)
         return element
 
     def create_profile_type(self, ifc_class, name, profile):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class=ifc_class, name=name)
-        rel = ifcopenshell.api.run("material.assign_material", self.file, product=element, type="IfcMaterialProfileSet")
+        rel = ifcopenshell.api.run("material.assign_material", self.file, products=[element], type="IfcMaterialProfileSet")
         profile_set = rel.RelatingMaterial
         material_profile = ifcopenshell.api.run(
             "material.add_profile", self.file, profile_set=profile_set, material=self.materials["TBD"]["ifc"]
         )
         ifcopenshell.api.run("material.assign_profile", self.file, material_profile=material_profile, profile=profile)
-        ifcopenshell.api.run("project.assign_declaration", self.file, definition=element, relating_context=self.library)
+        ifcopenshell.api.run("project.assign_declaration", self.file, definitions=[element], relating_context=self.library)
 
     def create_type(self, ifc_class, name, representations):
         element = ifcopenshell.api.run("root.create_entity", self.file, ifc_class=ifc_class, name=name)
@@ -248,7 +248,7 @@ class LibraryGenerator:
             ifcopenshell.api.run(
                 "geometry.assign_representation", self.file, product=element, representation=representation
             )
-        ifcopenshell.api.run("project.assign_declaration", self.file, definition=element, relating_context=self.library)
+        ifcopenshell.api.run("project.assign_declaration", self.file, definitions=[element], relating_context=self.library)
 
 
 LibraryGenerator().generate()

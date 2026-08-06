@@ -19,7 +19,9 @@
 
 #include "IfcGeom.h"
 #include "../ifcgeom_schema_agnostic/IfcGeomShapeType.h"
+#include "../ifcgeom_schema_agnostic/wire_utils.h"
 
+#include <BRepCheck.hxx>
 #include <BRepCheck_Analyzer.hxx>
 
 #define Kernel MAKE_TYPE_NAME(Kernel)
@@ -68,7 +70,7 @@ bool IfcGeom::Kernel::convert_shape(const IfcBaseInterface* l, TopoDS_Shape& r) 
 	if (st == ST_SHAPELIST) {
 		processed = true;
 		IfcRepresentationShapeItems items;
-		success = convert_shapes(l, items) && flatten_shape_list(items, r, false);
+		success = convert_shapes(l, items) && util::flatten_shape_list(items, r, false, getValue(GV_PRECISION));
 	} else if (st == ST_SHAPE && include_solids_and_surfaces) {
 #include "mapping_shape.i"
 	} else if (st == ST_FACE && include_solids_and_surfaces) {
@@ -85,22 +87,53 @@ bool IfcGeom::Kernel::convert_shape(const IfcBaseInterface* l, TopoDS_Shape& r) 
 		processed = true;
 		Handle(Geom_Curve) crv;
 		TopoDS_Wire w;
-		success = convert_curve(l, crv) && convert_curve_to_wire(crv, w);
+		success = convert_curve(l, crv) && util::convert_curve_to_wire(crv, w);
 		if (success) {
 			r = w;
 		}
 	}
 
 	if ( processed && success ) { 
-		const double precision = getValue(GV_PRECISION);
-		apply_tolerance(r, precision);
 #ifndef NO_CACHE
 		cache.Shape[id] = r;
 #endif
 
 		if (Logger::LOG_DEBUG >= Logger::Verbosity()) {
+			std::stringstream ss;
+
 			BRepCheck_Analyzer ana(r);
-			Logger::Notice("Valid: " + std::to_string(ana.IsValid()), l);
+
+			std::function<void(const TopoDS_Shape&)> traverse_subshapes;
+
+			traverse_subshapes = [&traverse_subshapes, &ana, &ss](const TopoDS_Shape& shape) {
+				if (shape.IsNull())
+					return;
+
+				TopoDS_Iterator it(shape);
+				for (; it.More(); it.Next()) {
+					const TopoDS_Shape& subs = it.Value();
+
+					auto rs = ana.Result(subs);
+					if (rs) {
+						for (auto& msg : rs->Status()) {
+							if (msg != BRepCheck_NoError) {
+								ss << " ";
+								std::stringstream sst;
+								BRepCheck::Print(msg, sst);
+								auto sss = sst.str();
+								// remove trailing newline added by Print()
+								ss << sss.substr(0, sss.size() - 1);
+							}
+						}
+					}
+
+					traverse_subshapes(subs);
+				}
+			};
+
+			traverse_subshapes(r);
+
+			Logger::Notice((ana.IsValid() ? "Valid shape" : "Invalid shape with:") + ss.str(), l);
 		}
 	} else if (!ignored) {
 		const char* const msg = processed
@@ -115,7 +148,7 @@ bool IfcGeom::Kernel::convert_wire(const IfcBaseInterface* l, TopoDS_Wire& r) {
 #include "mapping_wire.i"
 	Handle(Geom_Curve) curve;
 	if (IfcGeom::Kernel::convert_curve(l, curve)) {
-		return IfcGeom::Kernel::convert_curve_to_wire(curve, r);
+		return util::convert_curve_to_wire(curve, r);
 	}
 	Logger::Message(Logger::LOG_ERROR,"No operation defined for:",l);
 	return false;

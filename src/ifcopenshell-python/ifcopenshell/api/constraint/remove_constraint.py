@@ -16,16 +16,37 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
 
+import ifcopenshell
+import ifcopenshell.util.element
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"constraint": None}
-        for key, value in settings.items():
-            self.settings[key] = value
 
-    def execute(self):
-        self.file.remove(self.settings["constraint"])
-        for rel in self.file.by_type("IfcRelAssociatesConstraint"):
-            if not rel.RelatingConstraint:
-                self.file.remove(rel)
+def remove_constraint(file: ifcopenshell.file, constraint: ifcopenshell.entity_instance) -> None:
+    """Remove a constraint (typically an objective)
+
+    Removes a constraint definition and all of its associations to any
+    products. Typically this would be an IfcObjective, although technically
+    you can associate IfcMetrics ith products too, though the meaning may be
+    unclear.
+
+    :param constraint: The IfcObjective you want to remove.
+    :type constraint: ifcopenshell.entity_instance
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        objective = ifcopenshell.api.run("constraint.add_objective", model)
+        ifcopenshell.api.run("constraint.remove_constraint", model,
+            constraint=objective)
+    """
+    settings = {"constraint": constraint}
+
+    file.remove(settings["constraint"])
+    for rel in file.by_type("IfcRelAssociatesConstraint"):
+        if not rel.RelatingConstraint:
+            history = rel.OwnerHistory
+            file.remove(rel)
+            if history:
+                ifcopenshell.util.element.remove_deep2(file, history)

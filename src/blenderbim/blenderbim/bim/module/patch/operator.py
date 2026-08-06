@@ -34,7 +34,7 @@ class SelectIfcPatchInput(bpy.types.Operator):
     bl_idname = "bim.select_ifc_patch_input"
     bl_label = "Select IFC Patch Input"
     bl_options = {"REGISTER", "UNDO"}
-    filter_glob: bpy.props.StringProperty(default="*.ifc", options={"HIDDEN"})
+    filter_glob: bpy.props.StringProperty(default="*.ifc;*.ifcZIP;*.ifcXML", options={"HIDDEN"})
     filepath: bpy.props.StringProperty(subtype="FILE_PATH")
 
     def execute(self, context):
@@ -71,7 +71,7 @@ class ExecuteIfcPatch(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         input_file = context.scene.BIMPatchProperties.ifc_patch_input
-        return os.path.isfile(input_file) and "ifc" in os.path.splitext(input_file)[1].lower()
+        return input_file or context.scene.BIMPatchProperties.should_load_from_memory
 
     def execute(self, context):
         props = context.scene.BIMPatchProperties
@@ -80,21 +80,33 @@ class ExecuteIfcPatch(bpy.types.Operator):
         else:
             arguments = [arg.get_value() for arg in props.ifc_patch_args_attr]
 
+        if props.should_load_from_memory and tool.Ifc.get():
+            input_file = props.ifc_patch_input
+            file = tool.Ifc.get()
+        else:
+            input_file = props.ifc_patch_input
+            file = ifcopenshell.open(props.ifc_patch_input)
+
+        # Store this in case the patch recipe resets the Blender session, such as by loading a new project.
+        ifc_patch_output = props.ifc_patch_output or props.ifc_patch_input
+
         output = ifcpatch.execute(
             {
-                "input": ifcopenshell.open(props.ifc_patch_input),
+                "input": input_file,
+                "file": file,
                 "recipe": props.ifc_patch_recipes,
                 "arguments": arguments,
                 "log": os.path.join(context.scene.BIMProperties.data_dir, "process.log"),
             }
         )
-        ifcpatch.write(output, props.ifc_patch_output)
+        ifcpatch.write(output, ifc_patch_output)
+        self.report({"INFO"}, f"{props.ifc_patch_recipes} patch executed successfully")
         return {"FINISHED"}
 
 
 class UpdateIfcPatchArguments(bpy.types.Operator):
     bl_idname = "bim.update_ifc_patch_arguments"
-    bl_label = "Update IFC Patch arguments"
+    bl_label = "Update IFC Patch Arguments"
     recipe: bpy.props.StringProperty()
 
     def execute(self, context):
@@ -109,12 +121,16 @@ class UpdateIfcPatchArguments(bpy.types.Operator):
             for arg_name in inputs:
                 arg_info = inputs[arg_name]
                 new_attr = patch_args.add()
+                data_type = arg_info.get("type", "str")
+                if isinstance(data_type, list):
+                    data_type = [dt for dt in data_type if dt != "NoneType"][0]
                 new_attr.data_type = {
+                    "Literal": "string",
                     "str": "string",
                     "float": "float",
                     "int": "integer",
                     "bool": "boolean",
-                }[arg_info.get("type", "str")]
+                }[data_type]
                 new_attr.name = arg_name
                 new_attr.set_value(arg_info.get("default", new_attr.get_value_default()))
         return {"FINISHED"}

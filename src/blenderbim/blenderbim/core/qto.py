@@ -16,24 +16,15 @@
 # You should have received a copy of the GNU General Public License
 # along with BlenderBIM Add-on.  If not, see <http://www.gnu.org/licenses/>.
 
+from __future__ import annotations
+from typing import TYPE_CHECKING
 
-def calculate_circle_radius(qto, obj=None):
+if TYPE_CHECKING:
+    import bpy
+    import blenderbim.tool as tool
+
+
+def calculate_circle_radius(qto: tool.Qto, obj: bpy.types.Object) -> float:
     result = qto.get_radius_of_selected_vertices(obj)
     qto.set_qto_result(result)
     return result
-
-def assign_pset_qto(qto, selected_objects):
-    for obj in selected_objects:
-        qto.assign_pset_qto_to_selected_object(obj)
-
-def calculate_all_qtos(qto, selected_objects):
-    for obj in selected_objects:
-        if not qto.get_pset_qto_object_ifc_info(obj):
-            print(f"There is no pset qto instance associated to object {obj.name}")
-            continue
-
-        pset_qto_properties = qto.get_pset_qto_properties(obj)
-
-        calculated_quantities = qto.get_calculated_quantities(obj, pset_qto_properties)
-
-        qto.edit_qto(obj, calculated_quantities)

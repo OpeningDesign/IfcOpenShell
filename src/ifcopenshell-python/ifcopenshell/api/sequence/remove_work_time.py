@@ -15,14 +15,31 @@
 #
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
+import ifcopenshell
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"work_time": None}
-        for key, value in settings.items():
-            self.settings[key] = value
+def remove_work_time(file: ifcopenshell.file, work_time: ifcopenshell.entity_instance) -> None:
+    """Removes a work time
 
-    def execute(self):
-        self.file.remove(self.settings["work_time"])
+    :param work_time: The IfcWorkTime to remove.
+    :type work_time: ifcopenshell.entity_instance
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        # Let's create a new calendar.
+        calendar = ifcopenshell.api.run("sequence.add_work_calendar", model)
+
+        # Let's start defining the times that we work during the week.
+        work_time = ifcopenshell.api.run("sequence.add_work_time", model,
+            work_calendar=calendar, time_type="WorkingTimes")
+
+        # And remove it immediately
+        ifcopenshell.api.run("sequence.remove_work_time", model, work_time=work_time)
+    """
+    settings = {"work_time": work_time}
+
+    file.remove(settings["work_time"])

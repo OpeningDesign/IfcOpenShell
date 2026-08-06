@@ -1,6 +1,5 @@
-
 # IfcSverchok - IFC Sverchok extension
-# Copyright (C) 2020, 2021 Dion Moult <dion@thinkmoult.com>
+# Copyright (C) 2020, 2021, 2022 Dion Moult <dion@thinkmoult.com>
 #
 # This file is part of IfcSverchok.
 #
@@ -19,6 +18,7 @@
 
 import bpy
 import ifcopenshell
+import ifcopenshell.guid
 import ifcsverchok.helper
 from bpy.props import StringProperty
 from sverchok.node_tree import SverchCustomTreeNode

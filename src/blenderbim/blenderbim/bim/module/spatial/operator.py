@@ -17,14 +17,12 @@
 # along with BlenderBIM Add-on.  If not, see <http://www.gnu.org/licenses/>.
 
 import bpy
-import ifcopenshell.api
-import ifcopenshell.util.element
 import blenderbim.tool as tool
 import blenderbim.core.spatial as core
+import blenderbim.core.geometry
+import blenderbim.core.aggregate
 import blenderbim.core.root
 import blenderbim.bim.handler
-from blenderbim.bim.ifc import IfcStore
-from blenderbim.bim.module.spatial.data import SpatialData
 
 
 class ReferenceStructure(bpy.types.Operator, tool.Ifc.Operator):
@@ -131,10 +129,17 @@ class CopyToContainer(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         sprops = context.scene.BIMSpatialProperties
+        # Track decompositions so they can be recreated after the operation
+        relationships = tool.Root.get_decomposition_relationships(context.selected_objects)
+        old_to_new = {}
         containers = [tool.Ifc.get().by_id(c.ifc_definition_id) for c in sprops.containers if c.is_selected]
         for obj in context.selected_objects:
-            core.copy_to_container(tool.Ifc, tool.Spatial, obj=obj, containers=containers)
-        blenderbim.bim.handler.purge_module_data()
+            result_objs = core.copy_to_container(tool.Ifc, tool.Collector, tool.Spatial, obj=obj, containers=containers)
+            if result_objs:
+                old_to_new[tool.Ifc.get_entity(obj)] = result_objs
+        # Recreate decompositions
+        tool.Root.recreate_decompositions(relationships, old_to_new)
+        blenderbim.bim.handler.refresh_ui_data()
 
 
 class SelectContainer(bpy.types.Operator, tool.Ifc.Operator):
@@ -153,3 +158,86 @@ class SelectSimilarContainer(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         core.select_similar_container(tool.Ifc, tool.Spatial, obj=context.active_object)
+
+
+class SelectProduct(bpy.types.Operator):
+    bl_idname = "bim.select_product"
+    bl_label = "Select Product"
+    bl_options = {"REGISTER", "UNDO"}
+    product: bpy.props.IntProperty()
+
+    def execute(self, context):
+        core.select_product(tool.Spatial, product=tool.Ifc.get().by_id(self.product))
+        return {"FINISHED"}
+
+
+class ImportSpatialDecomposition(bpy.types.Operator):
+    bl_idname = "bim.import_spatial_decomposition"
+    bl_label = "Load Container Manager"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        core.import_spatial_decomposition(tool.Spatial)
+        return {"FINISHED"}
+
+
+class EditContainerAttributes(bpy.types.Operator):
+    bl_idname = "bim.edit_container_attributes"
+    bl_label = "Edit container attributes"
+    bl_options = {"REGISTER", "UNDO"}
+    container: bpy.props.IntProperty()
+
+    def execute(self, context):
+        core.edit_container_attributes(tool.Spatial, entity=tool.Ifc.get().by_id(self.container))
+        return {"FINISHED"}
+
+
+class ContractContainer(bpy.types.Operator):
+    bl_idname = "bim.contract_container"
+    bl_label = "Contract Container"
+    bl_options = {"REGISTER", "UNDO"}
+    container: bpy.props.IntProperty()
+
+    def execute(self, context):
+        core.contract_container(tool.Spatial, container=tool.Ifc.get().by_id(self.container))
+        return {"FINISHED"}
+
+
+class ExpandContainer(bpy.types.Operator):
+    bl_idname = "bim.expand_container"
+    bl_label = "Expand Container"
+    bl_options = {"REGISTER", "UNDO"}
+    container: bpy.props.IntProperty()
+
+    def execute(self, context):
+        core.expand_container(tool.Spatial, container=tool.Ifc.get().by_id(self.container))
+        return {"FINISHED"}
+
+
+class DeleteContainer(bpy.types.Operator, tool.Ifc.Operator):
+    bl_idname = "bim.delete_container"
+    bl_label = "Delete Container"
+    bl_options = {"REGISTER", "UNDO"}
+    container: bpy.props.IntProperty()
+
+    def _execute(self, context):
+        core.delete_container(tool.Ifc, tool.Spatial, tool.Geometry, container=tool.Ifc.get().by_id(self.container))
+
+
+class SelectDecomposedElements(bpy.types.Operator, tool.Ifc.Operator):
+    bl_idname = "bim.select_decomposed_elements"
+    bl_label = "Select Children"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def _execute(self, context):
+        core.select_decomposed_elements(tool.Spatial)
+
+
+class SetDefaultContainer(bpy.types.Operator, tool.Ifc.Operator):
+    bl_idname = "bim.set_default_container"
+    bl_label = "Set Default Container"
+    bl_options = {"REGISTER", "UNDO"}
+    container: bpy.props.IntProperty()
+
+    def _execute(self, context):
+        core.set_default_container(tool.Spatial, container=tool.Ifc.get().by_id(self.container))

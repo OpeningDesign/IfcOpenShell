@@ -18,32 +18,58 @@
 
 import ifcopenshell
 import ifcopenshell.api
+import ifcopenshell.util.element
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"related_object": None}
-        for key, value in settings.items():
-            self.settings[key] = value
+def unassign_type(file: ifcopenshell.file, related_objects: list[ifcopenshell.entity_instance]) -> None:
+    """Unassigns a type from occurrences
 
-    def execute(self):
-        if self.file.schema == "IFC2X3":
-            is_typed_by = None
-            is_defined_by = self.settings["related_object"].IsDefinedBy
-            for rel in is_defined_by:
-                if rel.is_a("IfcRelDefinesByType"):
-                    is_typed_by = rel
+    Note that unassigning a type doesn't automatically remove mapped representations
+    and material usages associated with the previously assigned type.
+
+    :param related_objects: List of IfcElement occurrences.
+    :type related_objects: list[ifcopenshell.entity_instance]
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        # A furniture type. This would correlate to a particular model in a
+        # manufacturer's catalogue. Like an Ikea sofa :)
+        furniture_type = ifcopenshell.api.run("root.create_entity", model,
+            ifc_class="IfcFurnitureType", name="FUN01")
+
+        # An individual occurrence of a that sofa.
+        furniture = ifcopenshell.api.run("root.create_entity", model, ifc_class="IfcFurniture")
+
+        # Assign the furniture to the furniture type.
+        ifcopenshell.api.run("type.assign_type", model, related_objects=[furniture], relating_type=furniture_type)
+
+        # Change our mind. Maybe it's a different type?
+        ifcopenshell.api.run("type.unassign_type", model, related_objects=[furniture])
+    """
+    settings = {"related_objects": related_objects}
+
+    related_objects = set(settings["related_objects"])
+
+    if file.schema == "IFC2X3":
+        rels = set(
+            rel
+            for object in related_objects
+            if (rel := next((rel for rel in object.IsDefinedBy if rel.is_a("IfcRelDefinesByType")), None))
+        )
+    else:
+        rels = set(rel for object in related_objects if (rel := next((rel for rel in object.IsTypedBy), None)))
+
+    for rel in rels:
+        related_objects = set(rel.RelatedObjects) - related_objects
+        if related_objects:
+            rel.RelatedObjects = list(related_objects)
+            ifcopenshell.api.run("owner.update_owner_history", file, **{"element": rel})
         else:
-            is_typed_by = self.settings["related_object"].IsTypedBy
-            if is_typed_by:
-                is_typed_by = is_typed_by[0]
-
-        if is_typed_by:
-            related_objects = list(is_typed_by.RelatedObjects)
-            related_objects.remove(self.settings["related_object"])
-            if related_objects:
-                is_typed_by.RelatedObjects = related_objects
-                ifcopenshell.api.run("owner.update_owner_history", self.file, **{"element": is_typed_by})
-            else:
-                self.file.remove(is_typed_by)
+            history = rel.OwnerHistory
+            file.remove(rel)
+            if history:
+                ifcopenshell.util.element.remove_deep2(file, history)

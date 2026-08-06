@@ -58,6 +58,10 @@ class draw_settings:
     profile_threshold: int = -1
     cells: bool = True
     merge_cells: bool = False
+    include_projection: bool = True
+    prefilter: bool = True
+    include_curves: bool = False
+    unify_inputs: bool = True
 
 
 def main(settings, files, iterators=None, merge_projection=True, progress_function=DO_NOTHING):
@@ -66,6 +70,7 @@ def main(settings, files, iterators=None, merge_projection=True, progress_functi
         # this is required for serialization
         APPLY_DEFAULT_MATERIALS=True,
         DISABLE_TRIANGULATION=True,
+        INCLUDE_CURVES=settings.include_curves,
         # when not doing booleans, proper solids from shells isn't a requirement
         SEW_SHELLS=settings.subtract_before_hlr,
     )
@@ -116,8 +121,7 @@ def main(settings, files, iterators=None, merge_projection=True, progress_functi
     sr.setPolygonal(True)
     sr.setUseNamespace(True)
 
-    # sane default?
-    sr.setAlwaysProject(True)
+    sr.setAlwaysProject(settings.include_projection)
 
     sr.setProfileThreshold(settings.profile_threshold)
     sr.setBoundingRectangle(settings.width, settings.height)
@@ -130,6 +134,9 @@ def main(settings, files, iterators=None, merge_projection=True, progress_functi
     sr.setNoCSS(not settings.css)
     if settings.subtract_before_hlr:
         sr.setSubtractionSettings(W.ALWAYS)
+
+    sr.setUsePrefiltering(settings.prefilter)
+    sr.setUnifyInputs(settings.unify_inputs)
 
     try:
         sh = ["none", "full", "left"].index(settings.storey_heights)
@@ -201,6 +208,10 @@ def main(settings, files, iterators=None, merge_projection=True, progress_functi
         projection, g1 = g1, g1.parentNode
         
         svgfill_context = W.context(W.FILTERED_CARTESIAN_QUOTIENT, 1.0e-3)
+
+        # remove duplicates (without tolerance)
+        ls = list(map(tuple, set(map(frozenset, ls))))
+
         svgfill_context.add(ls)
         
         if settings.merge_cells:

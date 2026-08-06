@@ -13,8 +13,8 @@ bool IfcParse::declaration::is(const std::string& name) const {
 
 	if (name_upper_ == *name_ptr) return true;
 
-	if (this->as_entity()) {
-		return this->as_entity()->is(name);
+	if (this->as_entity() && this->as_entity()->supertype()) {
+		return this->as_entity()->supertype()->is(name);
 	} else if (this->as_type_declaration()) {
 		const IfcParse::named_type* nt = this->as_type_declaration()->declared_type()->as_named_type();
 		if (nt) return nt->is(name);
@@ -26,8 +26,8 @@ bool IfcParse::declaration::is(const std::string& name) const {
 bool IfcParse::declaration::is(const IfcParse::declaration& decl) const {
 	if (this == &decl) return true;
 
-	if (this->as_entity()) {
-		return this->as_entity()->is(decl);
+	if (this->as_entity() && this->as_entity()->supertype()) {
+		return this->as_entity()->supertype()->is(decl);
 	} else if (this->as_type_declaration()) {
 		const IfcParse::named_type* nt = this->as_type_declaration()->declared_type()->as_named_type();
 		if (nt) return nt->is(decl);
@@ -118,6 +118,15 @@ void IfcParse::register_schema(schema_definition* s) {
 #ifdef HAS_SCHEMA_4x3
 #include "../ifcparse/Ifc4x3.h"
 #endif
+#ifdef HAS_SCHEMA_4x3_tc1
+#include "../ifcparse/Ifc4x3_tc1.h"
+#endif
+#ifdef HAS_SCHEMA_4x3_add1
+#include "../ifcparse/Ifc4x3_add1.h"
+#endif
+#ifdef HAS_SCHEMA_4x3_add2
+#include "../ifcparse/Ifc4x3_add2.h"
+#endif
 
 const IfcParse::schema_definition* IfcParse::schema_by_name(const std::string& name) {
 	// TODO: initialize automatically somehow
@@ -147,6 +156,15 @@ const IfcParse::schema_definition* IfcParse::schema_by_name(const std::string& n
 #endif
 #ifdef HAS_SCHEMA_4x3
    Ifc4x3::get_schema();
+#endif
+#ifdef HAS_SCHEMA_4x3_tc1
+   Ifc4x3_tc1::get_schema();
+#endif
+#ifdef HAS_SCHEMA_4x3_add1
+   Ifc4x3_add1::get_schema();
+#endif
+#ifdef HAS_SCHEMA_4x3_add2
+   Ifc4x3_add2::get_schema();
 #endif
 
 	std::map<std::string, const IfcParse::schema_definition*>::const_iterator it = schemas.find(boost::to_upper_copy(name));
@@ -198,6 +216,15 @@ void IfcParse::clear_schemas() {
 #endif
 #ifdef HAS_SCHEMA_4x3
 	Ifc4x3::clear_schema();
+#endif
+#ifdef HAS_SCHEMA_4x3_tc1
+	Ifc4x3_tc1::clear_schema();
+#endif
+#ifdef HAS_SCHEMA_4x3_add1
+	Ifc4x3_add1::clear_schema();
+#endif
+#ifdef HAS_SCHEMA_4x3_add2
+	Ifc4x3_add2::clear_schema();
 #endif
 
 	// clear any remaining registered schemas

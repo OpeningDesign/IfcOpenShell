@@ -16,15 +16,37 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
 
+import ifcopenshell
+import ifcopenshell.util.element
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"reference": None}
-        for key, value in settings.items():
-            self.settings[key] = value
 
-    def execute(self):
-        for rel in self.settings["reference"].DocumentRefForObjects or []:
-            self.file.remove(rel)
-        self.file.remove(self.settings["reference"])
+def remove_reference(file: ifcopenshell.file, reference: ifcopenshell.entity_instance) -> None:
+    """Remove a document reference
+
+    All associations with objects are removed.
+
+    :param reference: The IfcDocumentReference to remove
+    :type reference: ifcopenshell.entity_instance
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        document = ifcopenshell.api.run("document.add_information", model)
+        reference = ifcopenshell.api.run("document.add_reference", model, information=document)
+        ifcopenshell.api.run("document.remove_reference", model, reference=reference)
+    """
+
+    if file.schema == "IFC2X3":
+        rels = [r for r in file.get_inverse(reference) if r.is_a("IfcRelAssociatesDocument")]
+    else:
+        rels = reference.DocumentRefForObjects
+
+    for rel in rels:
+        history = rel.OwnerHistory
+        file.remove(rel)
+        if history:
+            ifcopenshell.util.element.remove_deep2(file, history)
+    file.remove(reference)

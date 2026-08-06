@@ -17,29 +17,50 @@
 # along with BlenderBIM Add-on.  If not, see <http://www.gnu.org/licenses/>.
 
 import bpy
+import bmesh
+import struct
+import hashlib
 import logging
 import numpy as np
 import ifcopenshell
+import ifcopenshell.api
+import ifcopenshell.geom
+import ifcopenshell.guid
+import ifcopenshell.util.element
+import ifcopenshell.util.representation
+import ifcopenshell.util.system
 import blenderbim.core.tool
+import blenderbim.core.drawing
 import blenderbim.core.style
+import blenderbim.core.spatial
+import blenderbim.core.system
+import blenderbim.core.geometry
 import blenderbim.tool as tool
 import blenderbim.bim.import_ifc
-from mathutils import Vector
+from math import radians, pi
+from mathutils import Vector, Matrix
 from blenderbim.bim.ifc import IfcStore
+from typing import Union, Iterable, Optional
 
 
 class Geometry(blenderbim.core.tool.Geometry):
     @classmethod
     def change_object_data(cls, obj, data, is_global=False):
         if is_global:
-            obj.data.user_remap(data)
+            cls.replace_object_data_globally(obj.data, data)
         else:
             obj.data = data
 
     @classmethod
+    def replace_object_data_globally(cls, old_data, new_data):
+        if getattr(old_data, "is_editmode", None):
+            raise Exception("user_remap is not supported for meshes in EDIT mode")
+        old_data.user_remap(new_data)
+
+    @classmethod
     def clear_cache(cls, element):
         cache = IfcStore.get_cache()
-        if cache:
+        if cache and hasattr(element, "GlobalId"):
             cache.remove(element.GlobalId)
 
     @classmethod
@@ -49,18 +70,107 @@ class Geometry(blenderbim.core.tool.Geometry):
 
     @classmethod
     def clear_scale(cls, obj):
+        # Note that clearing scale has no impact on cameras.
         if (obj.scale - Vector((1.0, 1.0, 1.0))).length > 1e-4:
-            if obj.data.users == 1:
+            if not obj.data:
+                location, rotation, _ = obj.matrix_world.decompose()
+                obj.matrix_world = Matrix.Translation(location) @ rotation.to_matrix().to_4x4()
+                obj.matrix_world.normalize()
+            elif obj.data.users == 1:
                 context_override = {}
                 context_override["object"] = context_override["active_object"] = obj
                 context_override["selected_objects"] = context_override["selected_editable_objects"] = [obj]
-                bpy.ops.object.transform_apply(context_override, location=False, rotation=False, scale=True)
+                with bpy.context.temp_override(**context_override):
+                    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
             else:
                 obj.scale = Vector((1.0, 1.0, 1.0))
 
     @classmethod
     def delete_data(cls, data):
         bpy.data.meshes.remove(data)
+
+    @classmethod
+    def delete_ifc_object(cls, obj: bpy.types.Object) -> None:
+        element = tool.Ifc.get_entity(obj)
+        if not element:
+            return
+        if element.is_a("IfcAnnotation") and element.ObjectType == "DRAWING":
+            return blenderbim.core.drawing.remove_drawing(tool.Ifc, tool.Drawing, drawing=element)
+        if element.is_a("IfcRelSpaceBoundary"):
+            ifcopenshell.api.run("boundary.remove_boundary", tool.Ifc.get(), boundary=element)
+            return bpy.data.objects.remove(obj)
+        if element.is_a("IfcGridAxis"):
+            is_last_axis = False
+            # Deleting the last W axis is OK
+            if ((grid := element.PartOfU) and len(grid[0].UAxes) == 1) or (
+                (grid := element.PartOfV) and len(grid[0].VAxes) == 1
+            ):
+                is_last_axis = True
+            if is_last_axis:
+                return
+            ifcopenshell.api.run("grid.remove_grid_axis", tool.Ifc.get(), axis=element)
+            return bpy.data.objects.remove(obj)
+
+        collection = obj.BIMObjectProperties.collection
+        if collection:
+            parent = ifcopenshell.util.element.get_aggregate(element)
+            if not parent:
+                parent = ifcopenshell.util.element.get_container(element)
+            if parent:
+                parent_obj = tool.Ifc.get_object(parent)
+                if parent_obj:
+                    parent_collection = parent_obj.BIMObjectProperties.collection
+                    for child in collection.children:
+                        parent_collection.children.link(child)
+                    for child_object in collection.objects:
+                        parent_collection.objects.link(child_object)
+            bpy.data.collections.remove(collection)
+        if getattr(element, "FillsVoids", None):
+            bpy.ops.bim.remove_filling(filling=element.id())
+
+        if element.is_a("IfcOpeningElement"):
+            if element.HasFillings:
+                for rel in element.HasFillings:
+                    bpy.ops.bim.remove_filling(filling=rel.RelatedBuildingElement.id())
+            else:
+                if element.VoidsElements:
+                    bpy.ops.bim.remove_opening(opening_id=element.id())
+        else:
+            is_spatial = element.is_a("IfcSpatialElement") or element.is_a("IfcSpatialStructureElement")
+            if getattr(element, "HasOpenings", None):
+                for rel in element.HasOpenings:
+                    bpy.ops.bim.remove_opening(opening_id=rel.RelatedOpeningElement.id())
+            for port in ifcopenshell.util.system.get_ports(element):
+                blenderbim.core.system.remove_port(tool.Ifc, tool.System, port=port)
+            ifcopenshell.api.run("root.remove_product", tool.Ifc.get(), product=element)
+
+            if isinstance(obj.data, bpy.types.Mesh) and not tool.Ifc.get_entity_by_id(
+                obj.data.BIMMeshProperties.ifc_definition_id
+            ):
+                tool.Blender.remove_data_block(obj.data)
+
+            if is_spatial:
+                blenderbim.core.spatial.load_container_manager(tool.Spatial)
+        try:
+            obj.name
+            bpy.data.objects.remove(obj)
+        except:
+            pass
+
+    @classmethod
+    def dissolve_triangulated_edges(cls, obj):
+        if obj.data and "ios_edges" in obj.data:
+            bm = bmesh.new()
+            bm.from_mesh(obj.data)
+            edges_to_keep = set(map(frozenset, obj.data["ios_edges"]))
+            edges_to_dissolve = []
+            for edge in bm.edges:
+                if frozenset([vert.index for vert in edge.verts]) not in edges_to_keep:
+                    edges_to_dissolve.append(edge)
+            bmesh.ops.dissolve_edges(bm, edges=edges_to_dissolve)
+            bm.to_mesh(obj.data)
+            bm.free()
+            del obj.data["ios_edges"]
 
     @classmethod
     def does_representation_id_exist(cls, representation_id):
@@ -72,7 +182,177 @@ class Geometry(blenderbim.core.tool.Geometry):
 
     @classmethod
     def duplicate_object_data(cls, obj):
-        return obj.data.copy()
+        if obj.data:
+            return obj.data.copy()
+
+    @classmethod
+    def generate_2d_box_mesh(cls, obj, axis="Z"):
+        bm = bmesh.new()
+        verts = [Vector(corner) for corner in obj.bound_box]
+        if axis == "Z":
+            verts = [verts[i] for i in [0, 4, 7, 3]]
+            for v in verts:
+                v.z = 0
+        elif axis == "Y":
+            verts = [verts[i] for i in [0, 4, 5, 1]]
+            for v in verts:
+                v.y = 0
+        elif axis == "X":
+            verts = [verts[i] for i in [4, 7, 6, 5]]
+            for v in verts:
+                v.x = 0
+        bm.faces.new([bm.verts.new(v) for v in verts])
+
+        mesh = bpy.data.meshes.new(name="tmp")
+        bm.to_mesh(mesh)
+        bm.free()
+        return mesh
+
+    @classmethod
+    def generate_3d_box_mesh(cls, obj):
+        bm = bmesh.new()
+        verts = [bm.verts.new(Vector(corner)) for corner in obj.bound_box]
+
+        bm.faces.new([verts[i] for i in [0, 3, 7, 4]])
+        bm.faces.new([verts[i] for i in [0, 1, 2, 3]])
+        bm.faces.new([verts[i] for i in [0, 4, 5, 1]])
+        bm.faces.new([verts[i] for i in [4, 7, 6, 5]])
+        bm.faces.new([verts[i] for i in [7, 3, 2, 6]])
+        bm.faces.new([verts[i] for i in [1, 5, 6, 2]])
+
+        mesh = bpy.data.meshes.new(name="tmp")
+        bm.to_mesh(mesh)
+        bm.free()
+        return mesh
+
+    @classmethod
+    def generate_outline_mesh(cls, obj, axis="+Z"):
+        def get_visible_faces(obj, bm, axis="+Z"):
+            # A visible face is any face with the normal facing the axis and
+            # its centroid not obscured (tested via raycasting) by any other
+            # face.
+            distance = max(obj.dimensions.xyz)
+            if axis == "+Z":
+                max_z = max([co[2] for co in obj.bound_box]) + 0.002
+                direction = Vector((0, 0, -1))
+            elif axis == "-Y":
+                min_y = max([co[2] for co in obj.bound_box]) - 0.002
+                direction = Vector((0, 1, 0))
+            depsgraph = bpy.context.evaluated_depsgraph_get()
+            visible_faces = []
+            face_offset = obj.matrix_world.to_quaternion() @ Vector((0, 0, distance))
+            global_direction = obj.matrix_world.to_quaternion() @ direction
+            for face in bm.faces:
+                if direction.dot(face.normal) > 0:
+                    continue
+                if axis == "+Z":
+                    face_centroid_at_max = Vector((*face.calc_center_median().xy, max_z))
+                elif axis == "-Y":
+                    centroid = face.calc_center_median()
+                    face_centroid_at_max = Vector((centroid.x, min_y, centroid.z))
+                face_centroid_at_max = obj.matrix_world @ face_centroid_at_max
+                hit, loc, norm, idx, o, mw = bpy.context.scene.ray_cast(
+                    depsgraph, face_centroid_at_max, global_direction, distance=distance
+                )
+                if o != obj or idx == face.index:
+                    visible_faces.append(face)
+            return visible_faces
+
+        def get_contour_edges(visible_faces):
+            # A contour is any edge where one face is visible and the other isn't.
+            contour_edges = []
+            for face in visible_faces:
+                for edge in face.edges:
+                    total_linked_faces = len(edge.link_faces)
+                    if total_linked_faces == 1:
+                        contour_edges.append(edge)
+                    elif total_linked_faces == 2:
+                        other_face = edge.link_faces[0] if edge.link_faces[1] == face else edge.link_faces[1]
+                        if other_face not in visible_faces:
+                            contour_edges.append(edge)
+            return contour_edges
+
+        def get_crease_edges(visible_faces, threshold):
+            # A crease is any edge with a face angle greater than a threshold.
+            crease_edges = []
+            for face in visible_faces:
+                for edge in face.edges:
+                    if len(edge.link_faces) == 2:
+                        angle = edge.link_faces[0].normal.angle(edge.link_faces[1].normal)
+                        if abs(angle) > threshold:
+                            crease_edges.append(edge)
+            return crease_edges
+
+        # Calculate outline edges
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        visible_faces = get_visible_faces(obj, bm, axis=axis)
+        outline_edges = set(get_contour_edges(visible_faces))
+        outline_edges.update(get_crease_edges(visible_faces, radians(60)))
+
+        # Copy outline edges to new bmesh
+        bm.to_mesh(obj.data)
+        bm_new = bmesh.new()
+        vert_map = {}
+
+        for edge in outline_edges:
+            verts = []
+            for vert in edge.verts:
+                if vert not in vert_map:
+                    new_vert = bm_new.verts.new(vert.co)
+                    vert_map[vert] = new_vert
+                verts.append(vert_map[vert])
+            bm_new.edges.new(verts)
+
+        # Flatten along axis in new bmesh
+        for vert in bm_new.verts:
+            if axis == "+Z":
+                vert.co.z = 0
+            elif axis == "-Y":
+                vert.co.y = 0
+
+        # Convert new bmesh to new mesh
+        new_mesh = bpy.data.meshes.new("tmp")
+        bm_new.to_mesh(new_mesh)
+
+        bm_new.free()
+        bm.free()
+
+        return new_mesh
+
+    @classmethod
+    def get_active_representation(cls, obj: bpy.types.Object) -> Union[ifcopenshell.entity_instance, None]:
+        """< IfcShapeRepresentation or None"""
+        if obj.data and hasattr(obj.data, "BIMMeshProperties") and obj.data.BIMMeshProperties.ifc_definition_id:
+            return tool.Ifc.get().by_id(obj.data.BIMMeshProperties.ifc_definition_id)
+
+    @classmethod
+    def get_active_representation_context(cls, obj):
+        active_representation = tool.Geometry.get_active_representation(obj)
+        if active_representation:
+            return active_representation.ContextOfItems
+        return ifcopenshell.util.representation.get_context(tool.Ifc.get(), "Model", "Body", "MODEL_VIEW")
+
+    @classmethod
+    def get_subcontext_parameters(
+        cls, subcontext: ifcopenshell.entity_instance
+    ) -> tuple[Union[str, None], Union[str, None], Union[str, None]]:
+        return (
+            subcontext.ContextType,
+            subcontext.ContextIdentifier,
+            getattr(subcontext, "TargetView", None),
+        )
+
+    @classmethod
+    def get_representation_by_context(cls, element, context):
+        if element.is_a("IfcProduct") and element.Representation:
+            for r in element.Representation.Representations:
+                if r.ContextOfItems == context:
+                    return r
+        elif element.is_a("IfcTypeProduct") and element.RepresentationMaps:
+            for r in element.RepresentationMaps:
+                if r.MappedRepresentation.ContextOfItems == context:
+                    return r.MappedRepresentation
 
     @classmethod
     def get_cartesian_point_coordinate_offset(cls, obj):
@@ -120,6 +400,38 @@ class Geometry(blenderbim.core.tool.Geometry):
         return "IfcExtrudedAreaSolid/IfcArbitraryProfileDefWithVoids"
 
     @classmethod
+    def get_mesh_checksum(cls, mesh):
+        data_bytes = b""
+        if isinstance(mesh, bpy.types.Mesh):
+            vertices = mesh.vertices[:]
+            edges = mesh.edges[:]
+            faces = mesh.polygons[:]
+
+            # Convert mesh data to bytes
+            for v in vertices:
+                data_bytes += struct.pack("3f", *v.co)
+            for e in edges:
+                data_bytes += struct.pack("2i", *e.vertices)
+            for f in faces:
+                data_bytes += struct.pack("%di" % len(f.vertices), *f.vertices)
+        elif isinstance(mesh, bpy.types.Curve):
+            splines = mesh.splines[:]
+
+            for spline in splines:
+                if spline.type == "BEZIER":
+                    for bezier_point in spline.bezier_points:
+                        data_bytes += struct.pack("3f", *bezier_point.co)
+                        data_bytes += struct.pack("3f", *bezier_point.handle_left)
+                        data_bytes += struct.pack("3f", *bezier_point.handle_right)
+                else:
+                    for point in spline.points:
+                        data_bytes += struct.pack("4f", *point.co)
+
+        hasher = hashlib.sha1()
+        hasher.update(data_bytes)
+        return hasher.hexdigest()
+
+    @classmethod
     def get_object_data(cls, obj):
         return obj.data
 
@@ -149,9 +461,29 @@ class Geometry(blenderbim.core.tool.Geometry):
         return f"{representation.ContextOfItems.id()}/{representation.id()}"
 
     @classmethod
-    def get_styles(cls, obj):
-        return [tool.Style.get_style(s.material) for s in obj.material_slots if s.material]
+    def get_styles(
+        cls, obj: bpy.types.Object, only_assigned_to_faces: bool = False
+    ) -> list[Union[ifcopenshell.entity_instance, None]]:
+        styles = [tool.Style.get_style(s.material) for s in obj.material_slots if s.material]
+        if not only_assigned_to_faces:
+            return styles
 
+        usage_count = [0] * len(obj.material_slots)
+        if not usage_count:  # if there are no materials, polygons will still use index 0
+            return []
+
+        for poly in obj.data.polygons:
+            usage_count[poly.material_index] += 1
+
+        # remove usages for empty material slots
+        for i, slot in reversed(list(enumerate(obj.material_slots))):
+            if not slot.material:
+                del usage_count[i]
+
+        styles = [style for style, usage in zip(styles, usage_count, strict=True) if usage > 0]
+        return styles
+
+    # TODO: multiple Literals?
     @classmethod
     def get_text_literal(cls, representation):
         texts = [i for i in representation.Items if i.is_a("IfcTextLiteral")]
@@ -167,21 +499,44 @@ class Geometry(blenderbim.core.tool.Geometry):
         return data.users != 0
 
     @classmethod
-    def import_representation(cls, obj, representation):
+    def has_geometric_data(cls, obj):
+        if not obj.data:
+            return False
+        if isinstance(obj.data, bpy.types.Mesh):
+            return bool(obj.data.vertices)
+        elif isinstance(obj.data, bpy.types.Curve):
+            return bool(obj.data.splines)
+        return False
+
+    @classmethod
+    def import_representation(cls, obj, representation, apply_openings=True):
         logger = logging.getLogger("ImportIFC")
         ifc_import_settings = blenderbim.bim.import_ifc.IfcImportSettings.factory(bpy.context, None, logger)
         element = tool.Ifc.get_entity(obj)
         settings = ifcopenshell.geom.settings()
         settings.set(settings.WELD_VERTICES, True)
+        context = representation.ContextOfItems
 
-        if representation.ContextOfItems.ContextIdentifier == "Body":
-            if element.is_a("IfcTypeProduct"):
+        if element.is_a("IfcTypeProduct"):
+            # You may only specify a single representation when creating shapes for types
+            try:
                 shape = ifcopenshell.geom.create_shape(settings, representation)
-            else:
-                shape = ifcopenshell.geom.create_shape(settings, element)
+            except:
+                settings.set(settings.INCLUDE_CURVES, True)
+                shape = ifcopenshell.geom.create_shape(settings, representation)
         else:
-            settings.set(settings.INCLUDE_CURVES, True)
-            shape = ifcopenshell.geom.create_shape(settings, representation)
+            if not apply_openings:
+                settings.set(settings.DISABLE_OPENING_SUBTRACTIONS, True)
+
+            if context.ContextIdentifier == "Body" and context.TargetView == "MODEL_VIEW":
+                try:
+                    shape = ifcopenshell.geom.create_shape(settings, element, representation)
+                except:
+                    settings.set(settings.INCLUDE_CURVES, True)
+                    shape = ifcopenshell.geom.create_shape(settings, element, representation)
+            else:
+                settings.set(settings.INCLUDE_CURVES, True)
+                shape = ifcopenshell.geom.create_shape(settings, element, representation)
 
         ifc_importer = blenderbim.bim.import_ifc.IfcImporter(ifc_import_settings)
         ifc_importer.file = tool.Ifc.get()
@@ -194,6 +549,7 @@ class Geometry(blenderbim.core.tool.Geometry):
             mesh = ifc_importer.create_mesh(element, shape)
             ifc_importer.material_creator.load_existing_materials()
             ifc_importer.material_creator.create(element, obj, mesh)
+            mesh.BIMMeshProperties.has_openings_applied = apply_openings
 
         return mesh
 
@@ -215,20 +571,60 @@ class Geometry(blenderbim.core.tool.Geometry):
                             new.value = element[i]
 
     @classmethod
-    def is_body_representation(cls, representation):
+    def is_body_representation(cls, representation: ifcopenshell.entity_instance) -> bool:
         return representation.ContextOfItems.ContextIdentifier == "Body"
 
     @classmethod
-    def is_box_representation(cls, representation):
+    def is_box_representation(cls, representation: ifcopenshell.entity_instance) -> bool:
         return representation.ContextOfItems.ContextIdentifier == "Box"
 
     @classmethod
     def is_edited(cls, obj):
-        return list(obj.scale) != [1.0, 1.0, 1.0] or obj in IfcStore.edited_objs
+        return not all([tool.Cad.is_x(o, 1.0) for o in obj.scale]) or obj in IfcStore.edited_objs
 
     @classmethod
-    def is_mapped_representation(cls, representation):
+    def is_mapped_representation(cls, representation: ifcopenshell.entity_instance) -> bool:
         return representation.RepresentationType == "MappedRepresentation"
+
+    @classmethod
+    def is_meshlike(cls, representation: ifcopenshell.entity_instance) -> bool:
+        if ifcopenshell.util.representation.resolve_representation(representation).RepresentationType in (
+            "AdvancedBrep",
+            "Annotation2D",
+            "Annotation3D",
+            "BoundingBox",
+            "Brep",
+            "Curve",
+            "Curve2D",
+            "Curve3D",
+            "FillArea",
+            "GeometricCurveSet",
+            "GeometricSet",
+            "Point",
+            "PointCloud",
+            "Surface",
+            "Surface2D",
+            "Surface3D",
+            "SurfaceModel",
+            "Tessellation",
+        ):
+            return True
+        return False
+
+    @classmethod
+    def is_profile_based(cls, data):
+        return data.BIMMeshProperties.subshape_type == "PROFILE"
+
+    @classmethod
+    def is_swept_profile(cls, representation):
+        return ifcopenshell.util.representation.resolve_representation(representation).RepresentationType in (
+            "SweptSolid",
+        )
+
+    @classmethod
+    def is_text_literal(cls, representation):
+        items = ifcopenshell.util.representation.resolve_items(representation)
+        return bool([i for i in items if i["item"].is_a("IfcTextLiteral")])
 
     @classmethod
     def is_type_product(cls, element):
@@ -243,7 +639,7 @@ class Geometry(blenderbim.core.tool.Geometry):
         obj.data.BIMMeshProperties.material_checksum = str([s.id() for s in cls.get_styles(obj) if s])
 
     @classmethod
-    def record_object_position(cls, obj):
+    def record_object_position(cls, obj: bpy.types.Object) -> None:
         # These are recorded separately because they have different numerical tolerances
         obj.BIMObjectProperties.location_checksum = repr(np.array(obj.matrix_world.translation).tobytes())
         obj.BIMObjectProperties.rotation_checksum = repr(np.array(obj.matrix_world.to_3x3()).tobytes())
@@ -271,10 +667,24 @@ class Geometry(blenderbim.core.tool.Geometry):
         bpy.data.objects.remove(obj)
 
     @classmethod
-    def resolve_mapped_representation(cls, representation):
+    def resolve_mapped_representation(
+        cls, representation: ifcopenshell.entity_instance
+    ) -> ifcopenshell.entity_instance:
         if representation.RepresentationType == "MappedRepresentation":
             return cls.resolve_mapped_representation(representation.Items[0].MappingSource.MappedRepresentation)
         return representation
+
+    @classmethod
+    def unresolve_type_representation(cls, representation, occurence):
+        if not ifcopenshell.util.element.get_type(occurence):
+            return representation
+
+        if representation.RepresentationType == "MappedRepresentation":
+            return representation
+
+        for mapped_representation in occurence.Representation.Representations:
+            if cls.resolve_mapped_representation(mapped_representation) == representation:
+                return mapped_representation
 
     @classmethod
     def run_geometry_update_representation(cls, obj=None):
@@ -315,5 +725,268 @@ class Geometry(blenderbim.core.tool.Geometry):
         return False
 
     @classmethod
-    def should_use_presentation_style_assignment(cls):
+    def should_use_presentation_style_assignment(cls) -> bool:
         return bpy.context.scene.BIMGeometryProperties.should_use_presentation_style_assignment
+
+    @classmethod
+    def get_model_representations(cls) -> list[ifcopenshell.entity_instance]:
+        return tool.Ifc.get().by_type("IfcShapeRepresentation")
+
+    @classmethod
+    def flip_object(cls, obj, flip_local_axes):
+        assert len(flip_local_axes) == 2, "flip_local_axes must be two axes to flip"
+        rotation_axis = next(i for i in "XYZ" if i not in flip_local_axes)
+        rotation_axis_i = "XYZ".index(rotation_axis)
+
+        bb_data = tool.Blender.get_object_bounding_box(obj)
+        # min max points of rotated plane of origin based bounding box
+        min_point = Vector([min(i, 0) for i in bb_data["min_point"]])
+        max_point = Vector([max(i, 0) for i in bb_data["max_point"]])
+        # keep it in rotated plane only
+        max_point[rotation_axis_i] = min_point[rotation_axis_i]
+
+        # to compensate for flipped two axes
+        # we adjust new max point to match previous min point (or vice versa)
+        original_min_point = obj.matrix_world @ min_point
+        obj.matrix_world = obj.matrix_world @ Matrix.Rotation(pi, 4, rotation_axis)
+        new_max_point = obj.matrix_world @ max_point
+        obj.matrix_world.translation += original_min_point - new_max_point
+
+        bpy.context.view_layer.update()
+
+    @classmethod
+    def reload_representation(cls, obj_or_objs: Union[bpy.types.Object, Iterable[bpy.types.Object]]) -> None:
+        """Reload object/objects active representation.
+
+        Ensures that same representations won't be reloaded multiple times.
+        """
+        objs = obj_or_objs if isinstance(obj_or_objs, Iterable) else [obj_or_objs]
+        ifc_file = tool.Ifc.get()
+
+        # Find all objects that use the same representation
+        # as there are possibility that some of them have openings
+        # (each representation with opening has a unique Mesh)
+        # and therefore reloading Mesh of it's type or occurrence
+        # might not be enough.
+        elements = set()
+        for obj in objs:
+            representation = tool.Geometry.get_active_representation(obj)
+            if not representation:
+                continue
+            representation = tool.Geometry.resolve_mapped_representation(representation)
+            elements.update(ifcopenshell.util.element.get_elements_by_representation(ifc_file, representation))
+
+        # Filter out unique meshes to avoid
+        # reloading the same representation multiple times.
+        meshes_to_objects: dict[bpy.types.Mesh, bpy.types.Object]
+        meshes_to_objects = {(obj:=tool.Ifc.get_object(element)).data: obj for element in elements}
+
+        for obj in meshes_to_objects.values():
+            representation = tool.Ifc.get().by_id(obj.data.BIMMeshProperties.ifc_definition_id)
+            blenderbim.core.geometry.switch_representation(
+                tool.Ifc,
+                tool.Geometry,
+                obj=obj,
+                representation=representation,
+                should_reload=True,
+                is_global=True,
+                should_sync_changes_first=False,
+                apply_openings=True,
+            )
+
+    @classmethod
+    def remove_representation_item(cls, representation_item):
+        # NOTE: we assume it's not the last representation item
+        # otherwise we probably would need to remove representation too
+        # NOTE: a lot of shared code with `geometry.remove_representation`
+        ifc_file = tool.Ifc.get()
+        shape_aspects = []
+
+        consider_inverses = []
+        styled_item, colour, texture, layer = None, None, None, None
+        [consider_inverses.append(styled_item := t) for t in representation_item.StyledByItem]
+        # IFC2X3 is using LayerAssignments
+        for t in (
+            representation_item.LayerAssignment
+            if hasattr(representation_item, "LayerAssignment")
+            else representation_item.LayerAssignments
+        ):
+            consider_inverses.append(layer := t)
+        # IfcTessellatedFaceSet
+        [consider_inverses.append(colour := t) for t in getattr(representation_item, "HasColours", [])]
+        [consider_inverses.append(texture := t) for t in getattr(representation_item, "HasTextures", [])]
+
+        for inverse in ifc_file.get_inverse(representation_item):
+            if inverse.is_a("IfcShapeRepresentation"):
+                if inverse.OfShapeAspect:
+                    shape_aspects.append(inverse.OfShapeAspect[0])
+                else:
+                    representation = inverse
+
+        if styled_item:
+            ifc_file.remove(styled_item)
+        if layer and len(layer.Items) == 1:
+            ifc_file.remove(styled_item)
+        if colour:
+            ifcopenshell.util.element.remove_deep2(ifc_file, colour)
+        if texture:
+            ifcopenshell.util.element.remove_deep2(ifc_file, texture)
+
+        for shape_aspect in shape_aspects:
+            cls.remove_representation_items_from_shape_aspect([representation_item], shape_aspect)
+
+        representation.Items = tuple(set(representation.Items) - {representation_item})
+        also_consider = list(consider_inverses)
+        ifcopenshell.util.element.remove_deep2(ifc_file, representation_item, also_consider=also_consider)
+
+    @classmethod
+    def create_shape_aspect(cls, product_shape, base_representation, items, previous_shape_aspect=None):
+        """
+        > `product_shape` - IfcProductDefinitionShape or IfcRepresentationMap\n
+        > `base_representation` - base representation to get context attributes from\n
+        > `items` - representation items\n
+        > `previous_shape_aspect` - (optional) previous shape aspect, if provided\n
+        items will be removed the previous shape aspect first\n
+
+        < IfcShapeAspect
+        """
+
+        if previous_shape_aspect is not None:
+            cls.remove_representation_items_from_shape_aspect(items, previous_shape_aspect)
+
+        shape_aspect = tool.Ifc.get().createIfcShapeAspect(
+            PartOfProductDefinitionShape=product_shape, ShapeRepresentations=()
+        )
+        # keep IfcShapeAspect and IfcShapeRepresentation valid
+        rep = tool.Geometry.add_shape_aspect_representation(shape_aspect, base_representation)
+        rep.Items = items
+
+        return shape_aspect
+
+    @classmethod
+    def remove_representation_items_from_shape_aspect(cls, representation_items, shape_aspect):
+        ifc_file = tool.Ifc.get()
+        # as shape aspect might have multiple representations
+        # it's easier to find it from the item
+        for inverse in ifc_file.get_inverse(representation_items[0]):
+            if inverse.is_a("IfcShapeRepresentation") and shape_aspect in inverse.OfShapeAspect:
+                representation = inverse
+                break
+
+        # removing last item would make representation invalid
+        if len(representation.Items) == len(representation_items):
+            # removing last representation would make shape aspect invalid.
+            # remove shape aspect first otherwise remove_representation won't remove it because of the inverse
+            if len(shape_aspect.ShapeRepresentations) == 1:
+                ifc_file.remove(shape_aspect)
+            tool.Ifc.run("geometry.remove_representation", representation=representation)
+        else:
+            items = set(representation.Items) - set(representation_items)
+            representation.Items = tuple(items)
+
+    @classmethod
+    def add_representation_item_to_shape_aspect(cls, representation_items, shape_aspect):
+        """NOTE: we assume that all items belonged to the same representation and to the same shape aspect"""
+        ifc_file = tool.Ifc.get()
+        previous_shape_aspect = None
+        for inverse in ifc_file.get_inverse(representation_items[0]):
+            if inverse.is_a("IfcShapeRepresentation"):
+                if inverse.OfShapeAspect:
+                    # item is already added to the shape aspect
+                    if inverse.OfShapeAspect[0] == shape_aspect:
+                        return
+                    previous_shape_aspect = inverse.OfShapeAspect[0]
+                else:
+                    base_representation = inverse
+
+        # remove item from previous shape aspect
+        if previous_shape_aspect:
+            cls.remove_representation_items_from_shape_aspect(representation_items, previous_shape_aspect)
+        shape_aspect_representation = cls.get_shape_aspect_representation(
+            shape_aspect, base_representation, create_new=True
+        )
+        shape_aspect_representation.Items = shape_aspect_representation.Items + tuple(representation_items)
+
+    @classmethod
+    def get_shape_aspect_representation(cls, shape_aspect, base_representation, create_new=False):
+        for representation in shape_aspect.ShapeRepresentations:
+            if (
+                representation.ContextOfItems == base_representation.ContextOfItems
+                and representation.RepresentationIdentifier == base_representation.RepresentationIdentifier
+                and representation.RepresentationType == base_representation.RepresentationType
+            ):
+                return representation
+
+        if not create_new:
+            return None
+
+        return cls.add_shape_aspect_representation(shape_aspect, base_representation)
+
+    @classmethod
+    def add_shape_aspect_representation(cls, shape_aspect, base_representation):
+        shape_aspect_representation = tool.Ifc.get().createIfcShapeRepresentation(
+            ContextOfItems=base_representation.ContextOfItems,
+            RepresentationIdentifier=base_representation.RepresentationIdentifier,
+            RepresentationType=base_representation.RepresentationType,
+        )
+        shape_aspect.ShapeRepresentations = shape_aspect.ShapeRepresentations + (shape_aspect_representation,)
+        return shape_aspect_representation
+
+    @classmethod
+    def get_shape_aspect_representation_for_item(cls, shape_aspect, representation_item):
+        ifc_file = tool.Ifc.get()
+        for inverse in ifc_file.get_inverse(representation_item):
+            if inverse.is_a("IfcShapeRepresentation"):
+                if inverse.OfShapeAspect:
+                    if inverse.OfShapeAspect[0] == shape_aspect:
+                        return inverse
+
+    @classmethod
+    def get_shape_aspect_styles(cls, element, shape_aspect, representation_item) -> list[ifcopenshell.entity_instance]:
+        """update `representation_item` style based on styles connected to the `shape_aspect`
+        through material constituents with the same name
+        """
+        if not shape_aspect.Name:
+            return []
+
+        # get material connected to the shape aspect with material constituent name
+        material = ifcopenshell.util.element.get_material(element, should_skip_usage=True)
+        if not material or not material.is_a("IfcMaterialConstituentSet") or not material.MaterialConstituents:
+            return []
+
+        matching_constituent = next((c for c in material.MaterialConstituents if c.Name == shape_aspect.Name), None)
+        if matching_constituent is None:
+            return []
+
+        constituent_material = matching_constituent.Material
+        if not constituent_material.HasRepresentation:
+            return []
+
+        # get shape aspect representation for item
+        shape_aspect_representation = cls.get_shape_aspect_representation_for_item(shape_aspect, representation_item)
+
+        # get the styles for this context
+        material_representation = None
+        for r in constituent_material.HasRepresentation[0].Representations:
+            if r.ContextOfItems == shape_aspect_representation.ContextOfItems:
+                material_representation = r
+                break
+
+        if material_representation is None:
+            return []
+
+        styles = [s for s in tool.Ifc.get().traverse(material_representation) if s.is_a("IfcPresentationStyle")]
+        return styles
+
+    @classmethod
+    def delete_opening_object_placement(cls, placement):
+        model = tool.Ifc.get()
+        ifcopenshell.util.element.remove_deep2(model, placement)
+
+    @classmethod
+    def get_blender_offset_type(cls, obj: bpy.types.Object) -> Optional[str]:
+        props = bpy.context.scene.BIMGeoreferenceProperties
+        if props.has_blender_offset:
+            if (result := obj.BIMObjectProperties.blender_offset_type) == "NONE":
+                result = obj.BIMObjectProperties.blender_offset_type = "OBJECT_PLACEMENT"
+            return result

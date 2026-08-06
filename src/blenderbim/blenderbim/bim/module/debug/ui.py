@@ -21,13 +21,13 @@ from bpy.types import Panel
 
 
 class BIM_PT_debug(Panel):
-    bl_label = "IFC Debug"
+    bl_label = "Debug"
     bl_idname = "BIM_PT_debug"
     bl_options = {"DEFAULT_CLOSED"}
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "scene"
-    bl_parent_id = "BIM_PT_quality_control"
+    bl_parent_id = "BIM_PT_tab_quality_control"
 
     def draw(self, context):
         layout = self.layout
@@ -44,20 +44,36 @@ class BIM_PT_debug(Panel):
         row.operator("bim.parse_express", icon="IMPORT", text="")
         row.operator("bim.select_express_file", icon="FILE_FOLDER", text="")
 
+        row = self.layout.row(align=True)
+        row.prop(props, "package_name", text="")
+        row.operator("bim.pip_install", icon="EVENT_PAGEDOWN").name = props.package_name
+
+        row = layout.row()
+        row.operator("bim.reload_ifc_file", text="Incrementally Reload Changes")
+
         row = layout.row()
         row.operator("bim.print_ifc_file")
+
+        row = layout.row()
+        row.operator("bim.copy_debug_information")
 
         row = layout.row()
         row.operator("bim.purge_hdf5_cache")
 
         row = layout.row()
-        row.operator("bim.purge_ifc_links")
+        row.operator("bim.update_representation", text="Manually Save Representation")
+
+        row = layout.row()
+        row.operator("bim.convert_to_blender")
 
         row = layout.row()
         row.operator("bim.create_all_shapes")
 
         row = layout.row()
         row.operator("bim.profile_import_ifc")
+
+        row = layout.row()
+        row.operator("bim.debug_active_drawing")
 
         row = layout.split(factor=0.5, align=True)
         row.operator("bim.create_shape_from_step_id").should_include_curves = False
@@ -72,6 +88,27 @@ class BIM_PT_debug(Panel):
             "bim.select_highest_polygon_meshes"
         ).percentile = context.scene.BIMDebugProperties.percentile_of_polygons
         row.prop(props, "percentile_of_polygons", text="")
+
+        row = layout.split(factor=0.5, align=True)
+        row.prop(props, "display_type", text="")
+        row.operator("bim.override_display_type").display = context.scene.BIMDebugProperties.display_type
+
+        layout.operator("bim.purge_unused_representations")
+
+        row = layout.row(align=True)
+        row.prop(context.scene.BIMDebugProperties, "ifc_class_purge", text="")
+        row.operator("bim.purge_unused_elements_by_class", text="Purge Orphaned", icon="TRASH")
+        row.operator("bim.print_unused_elements_stats", text="", icon="INFO")
+
+        if context.active_object and context.active_object.data:
+            mprops = context.active_object.data.BIMMeshProperties
+            row = layout.row()
+            row.operator("bim.get_representation_ifc_parameters")
+            for index, ifc_parameter in enumerate(mprops.ifc_parameters):
+                row = layout.row(align=True)
+                row.prop(ifc_parameter, "name", text="")
+                row.prop(ifc_parameter, "value", text="")
+                row.operator("bim.update_parametric_representation", icon="FILE_REFRESH", text="").index = index
 
         layout.label(text="Inspector:")
 
@@ -94,7 +131,7 @@ class BIM_PT_debug(Panel):
                 op = row.operator("bim.select_global_id", icon="RESTRICT_SELECT_OFF", text="")
                 op.global_id = attribute.string_value
             if attribute.name == "ObjectPlacement":
-                op = row.operator("bim.print_object_placement", icon="TRACKER", text="")
+                op = row.operator("bim.print_object_placement", icon="OBJECT_ORIGIN", text="")
                 op.step_id = attribute.int_value
             if attribute.int_value:
                 row.operator(

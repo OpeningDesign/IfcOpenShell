@@ -18,26 +18,59 @@
 
 import ifcopenshell
 import ifcopenshell.api
+import ifcopenshell.util.element
+from typing import Union
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {
-            "relating_control": None,
-            "related_object": None,
-        }
-        for key, value in settings.items():
-            self.settings[key] = value
+def unassign_control(
+    file: ifcopenshell.file,
+    relating_control: ifcopenshell.entity_instance,
+    related_object: ifcopenshell.entity_instance,
+) -> Union[ifcopenshell.entity_instance, None]:
+    """Unassigns a planning control or constraint to an object
 
-    def execute(self):
-        for rel in self.settings["related_object"].HasAssignments or []:
-            if not rel.is_a("IfcRelAssignsToControl") or rel.RelatingControl != self.settings["relating_control"]:
-                continue
-            if len(rel.RelatedObjects) == 1:
-                return self.file.remove(rel)
-            related_objects = list(rel.RelatedObjects)
-            related_objects.remove(self.settings["related_object"])
-            rel.RelatedObjects = related_objects
-            ifcopenshell.api.run("owner.update_owner_history", self.file, **{"element": rel})
-            return rel
+    :param relating_control: The IfcControl entity that is creating the
+        control or constraint
+    :type relating_control: ifcopenshell.entity_instance
+    :param related_object: The IfcObjectDefinition that is being controlled
+    :type related_object: ifcopenshell.entity_instance
+    :return: If the control still is related to other objects, the
+        IfcRelAssignsToControl is returned, otherwise None.
+    :rtype: ifcopenshell.entity_instance, None
+
+    Example:
+
+    .. code:: python
+
+        # Let's relate a cost item and a product
+        wall = ifcopenshell.api.run("root.create_entity", model, ifc_class="IfcWall")
+        schedule = ifcopenshell.api.run("cost.add_cost_schedule", model)
+        cost_item = ifcopenshell.api.run("cost.add_cost_item", model,
+            cost_schedule=schedule)
+        ifcopenshell.api.run("control.assign_control", model,
+            relating_control=cost_item, related_object=wall)
+
+        # And now let's change our mind
+        ifcopenshell.api.run("control.unassign_control", model,
+            relating_control=cost_item, related_object=wall)
+    """
+
+    settings = {
+        "relating_control": relating_control,
+        "related_object": related_object,
+    }
+
+    for rel in settings["related_object"].HasAssignments or []:
+        if not rel.is_a("IfcRelAssignsToControl") or rel.RelatingControl != settings["relating_control"]:
+            continue
+        if len(rel.RelatedObjects) == 1:
+            history = rel.OwnerHistory
+            file.remove(rel)
+            if history:
+                ifcopenshell.util.element.remove_deep2(file, history)
+            return
+        related_objects = list(rel.RelatedObjects)
+        related_objects.remove(settings["related_object"])
+        rel.RelatedObjects = related_objects
+        ifcopenshell.api.run("owner.update_owner_history", file, **{"element": rel})
+        return rel

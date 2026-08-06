@@ -47,7 +47,7 @@ def remove_system(ifc, system_tool, system=None):
 
 def enable_editing_system(system_tool, system=None):
     system_tool.import_system_attributes(system)
-    system_tool.set_active_system(system)
+    system_tool.set_active_edited_system(system)
 
 
 def disable_editing_system(system):
@@ -55,25 +55,26 @@ def disable_editing_system(system):
 
 
 def assign_system(ifc, system=None, product=None):
-    ifc.run("system.assign_system", product=product, system=system)
+    ifc.run("system.assign_system", products=[product], system=system)
 
 
 def unassign_system(ifc, system=None, product=None):
-    ifc.run("system.unassign_system", product=product, system=system)
+    ifc.run("system.unassign_system", products=[product], system=system)
 
 
 def select_system_products(system_tool, system=None):
     system_tool.select_system_products(system)
+    system_tool.set_active_system(system)
 
 
-def show_ports(ifc, system, element=None):
+def show_ports(ifc, system, spatial, element=None):
     obj = ifc.get_object(element)
     if obj and ifc.is_moved(obj):
         system.run_geometry_edit_object_placement(obj=obj)
 
     ports = system.get_ports(element)
     system.load_ports(element, ports)
-    system.select_elements(ports)
+    spatial.select_products(ports)
 
 
 def hide_ports(ifc, system, element=None):
@@ -93,7 +94,7 @@ def hide_ports(ifc, system, element=None):
 def add_port(ifc, system, element=None):
     system.load_ports(element, system.get_ports(element))
     obj = system.create_empty_at_cursor_with_element_orientation(element)
-    port = system.run_root_assign_class(obj=obj, ifc_class="IfcDistributionPort")
+    port = system.run_root_assign_class(obj=obj, ifc_class="IfcDistributionPort", should_add_representation=False)
     ifc.run("system.assign_port", element=element, port=port)
 
 

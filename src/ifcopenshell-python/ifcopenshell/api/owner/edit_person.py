@@ -15,15 +15,33 @@
 #
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
+import ifcopenshell
+from typing import Any
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"person": None, "attributes": {}}
-        for key, value in settings.items():
-            self.settings[key] = value
+def edit_person(file: ifcopenshell.file, person: ifcopenshell.entity_instance, attributes: dict[str, Any]) -> None:
+    """Edits the attributes of an IfcPerson
 
-    def execute(self):
-        for name, value in self.settings["attributes"].items():
-            setattr(self.settings["person"], name, value)
+    For more information about the attributes and data types of an
+    IfcPerson, consult the IFC documentation.
+
+    :param person: The IfcPerson entity you want to edit
+    :type person: ifcopenshell.entity_instance
+    :param attributes: a dictionary of attribute names and values.
+    :type attributes: dict
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        person = ifcopenshell.api.run("owner.add_person", model,
+            identification="bobthebuilder", family_name="Thebuilder", given_name="Bob")
+        ifcopenshell.api.run("owner.edit_person", model, person=person,
+            attributes={"MiddleNames": ["The"], "FamilyName": "Builder"})
+    """
+    settings = {"person": person, "attributes": attributes}
+
+    for name, value in settings["attributes"].items():
+        setattr(settings["person"], name, value)

@@ -15,14 +15,32 @@
 #
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
+import ifcopenshell
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"currency": "DOLLARYDOO"}
-        for key, value in settings.items():
-            self.settings[key] = value
+def add_monetary_unit(file: ifcopenshell.file, currency: str = "DOLLARYDOO") -> ifcopenshell.entity_instance:
+    """Add a new currency
 
-    def execute(self):
-        return self.file.create_entity("IfcMonetaryUnit", self.settings["currency"])
+    Currency units are useful in cost plans to know in what currency the
+    costs are calculated in. The currencies should follow ISO 4217, like
+    USD, GBP, AUD, MYR, etc.
+
+    :param currency: The currency code
+    :type currency: str
+    :return: The newly created IfcMonetaryUnit
+    :rtype: ifcopenshell.entity_instance
+
+    Example:
+
+    .. code:: python
+
+        # If you do all your cost plans in Zimbabwean dollars then nobody
+        # knows how accurate the numbers are.
+        zwl = ifcopenshell.api.run("unit.add_monetary_unit", model, currency="ZWL")
+
+        # Make it our default currency
+        ifcopenshell.api.run("unit.assign_unit", model, units=[zwl])
+    """
+    settings = {"currency": currency}
+
+    return file.create_entity("IfcMonetaryUnit", settings["currency"])

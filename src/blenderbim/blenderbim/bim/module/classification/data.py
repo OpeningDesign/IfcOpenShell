@@ -65,12 +65,17 @@ class ClassificationsData:
 
 class ReferencesData:
     @classmethod
-    def is_available_classification_added(cls):
+    def active_classification_library(cls):
         if not IfcStore.classification_file or not IfcStore.classification_file.by_type("IfcClassification"):
             return False
         props = bpy.context.scene.BIMClassificationProperties
         name = IfcStore.classification_file.by_id(int(props.available_classifications)).Name
-        return name in [e.Name for e in tool.Ifc.get().by_type("IfcClassification")]
+        if name in [e.Name for e in tool.Ifc.get().by_type("IfcClassification")]:
+            return name
+
+    @classmethod
+    def classifications(cls):
+        return [(str(e.id()), e.Name, "") for e in tool.Ifc.get().by_type("IfcClassification")]
 
 
 class ClassificationReferencesData(ReferencesData):
@@ -81,7 +86,9 @@ class ClassificationReferencesData(ReferencesData):
     def load(cls):
         cls.is_loaded = True
         cls.data["references"] = cls.references()
-        cls.data["is_available_classification_added"] = cls.is_available_classification_added()
+        cls.data["active_classification_library"] = cls.active_classification_library()
+        cls.data["classifications"] = cls.classifications()
+        cls.data["object_type"] = "Object"
 
     @classmethod
     def references(cls):
@@ -103,17 +110,23 @@ class MaterialClassificationsData(ReferencesData):
     def load(cls):
         cls.is_loaded = True
         cls.data["references"] = cls.references()
-        cls.data["is_available_classification_added"] = cls.is_available_classification_added()
+        cls.data["active_classification_library"] = cls.active_classification_library()
+        cls.data["classifications"] = cls.classifications()
+        cls.data["object_type"] = "Material"
 
     @classmethod
     def references(cls):
         results = []
-        element = tool.Ifc.get_entity(bpy.context.active_object.active_material)
-        if element:
-            for reference in ifcopenshell.util.classification.get_references(element):
-                data = reference.get_info()
-                del data["ReferencedSource"]
-                results.append(data)
+
+        props = bpy.context.scene.BIMMaterialProperties
+        if props.materials and props.active_material_index < len(props.materials):
+            material = props.materials[props.active_material_index]
+            if material.ifc_definition_id:
+                element = tool.Ifc.get().by_id(material.ifc_definition_id)
+                for reference in ifcopenshell.util.classification.get_references(element):
+                    data = reference.get_info()
+                    del data["ReferencedSource"]
+                    results.append(data)
         return results
 
 
@@ -125,7 +138,9 @@ class CostClassificationsData(ReferencesData):
     def load(cls):
         cls.is_loaded = True
         cls.data["references"] = cls.references()
-        cls.data["is_available_classification_added"] = cls.is_available_classification_added()
+        cls.data["active_classification_library"] = cls.active_classification_library()
+        cls.data["classifications"] = cls.classifications()
+        cls.data["object_type"] = "Cost"
 
     @classmethod
     def references(cls):

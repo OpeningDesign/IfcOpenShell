@@ -18,29 +18,29 @@
 
 from bpy.types import Panel, UIList
 from blenderbim.bim.ifc import IfcStore
-from ifcopenshell.api.group.data import Data
+from blenderbim.bim.module.group.data import GroupsData, ObjectGroupsData
 
 
 class BIM_PT_groups(Panel):
-    bl_label = "IFC Groups"
+    bl_label = "Groups"
     bl_idname = "BIM_PT_groups"
     bl_options = {"DEFAULT_CLOSED"}
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "scene"
-    bl_parent_id = "BIM_PT_project_setup"
+    bl_parent_id = "BIM_PT_tab_grouping_and_filtering"
 
     @classmethod
     def poll(cls, context):
         return IfcStore.get_file()
 
     def draw(self, context):
-        if not Data.is_loaded:
-            Data.load(IfcStore.get_file())
+        if not GroupsData.is_loaded:
+            GroupsData.load()
         self.props = context.scene.BIMGroupProperties
 
         row = self.layout.row(align=True)
-        row.label(text=f"{len(Data.groups)} Groups Found", icon="OUTLINER")
+        row.label(text=f"{GroupsData.data['total_groups']} Groups Found", icon="OUTLINER")
         if self.props.is_editing:
             row.operator("bim.add_group", text="", icon="ADD").group = 0
             row.operator("bim.disable_group_editing_ui", text="", icon="CANCEL")
@@ -69,13 +69,14 @@ class BIM_PT_groups(Panel):
 
 
 class BIM_PT_object_groups(Panel):
-    bl_label = "IFC Groups"
+    bl_label = "Groups"
     bl_idname = "BIM_PT_object_groups"
     bl_options = {"DEFAULT_CLOSED"}
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "object"
-    bl_parent_id = "BIM_PT_utilities_object"
+    bl_order = 1
+    bl_parent_id = "BIM_PT_tab_misc"
 
     @classmethod
     def poll(cls, context):
@@ -84,13 +85,13 @@ class BIM_PT_object_groups(Panel):
         return IfcStore.get_file() and context.active_object.BIMObjectProperties.ifc_definition_id
 
     def draw(self, context):
-        if not Data.is_loaded:
-            Data.load(IfcStore.get_file())
+        if not ObjectGroupsData.is_loaded:
+            ObjectGroupsData.load()
         self.props = context.scene.BIMGroupProperties
         row = self.layout.row(align=True)
-        if self.props.is_adding:
+        if self.props.is_editing:
             row.label(text="Adding Groups", icon="OUTLINER")
-            row.operator("bim.toggle_assigning_group", text="", icon="CANCEL")
+            row.operator("bim.disable_group_editing_ui", text="", icon="CANCEL")
             self.layout.template_list(
                 "BIM_UL_object_groups",
                 "",
@@ -100,18 +101,18 @@ class BIM_PT_object_groups(Panel):
                 "active_group_index",
             )
         else:
-            row.label(text=f"{len(Data.groups)} Groups in IFC Project", icon="OUTLINER")
-            row.operator("bim.toggle_assigning_group", text="", icon="ADD")
+            row.label(text=f"{ObjectGroupsData.data['total_groups']} Groups in IFC Project", icon="OUTLINER")
+            row.operator("bim.load_groups", text="", icon="GREASEPENCIL")
 
-        groups_object = Data.products.get(context.active_object.BIMObjectProperties.ifc_definition_id, [])
-        for group_id in groups_object:
+        for group in ObjectGroupsData.data["groups"]:
             row = self.layout.row(align=True)
-            row.label(text=Data.groups[group_id].get("Name", "Unnamed"))
+            row.label(text=group["name"])
+            row.operator("bim.select_group_elements", text="", icon="RESTRICT_SELECT_OFF").group = group["id"]
             op = row.operator("bim.unassign_group", text="", icon="X")
-            op.group = group_id
+            op.group = group["id"]
 
-        if not groups_object:
-            self.layout.label(text="No Group associated with Active Object")
+        if not ObjectGroupsData.data["groups"]:
+            self.layout.label(text="No Associated Groups")
 
 
 class BIM_UL_groups(UIList):
@@ -130,7 +131,7 @@ class BIM_UL_groups(UIList):
             else:
                 row.label(text="", icon="BLANK1")
 
-            row.label(text=f"*{item.name}") if item.selection_query != "" else row.label(text=item.name)
+            row.label(text=item.name)
             group_id = item.ifc_definition_id
             if context.scene.BIMGroupProperties.active_group_id == group_id:
                 op = row.operator("bim.select_group_products", text="", icon="RESTRICT_SELECT_OFF")
@@ -144,10 +145,6 @@ class BIM_UL_groups(UIList):
                 op.group = group_id
                 op = row.operator("bim.remove_group", text="", icon="X")
                 op.group = group_id
-                if item.selection_query != "":
-                    op = row.operator("bim.update_group", text="", icon="FILE_REFRESH")
-                    op.group_id = item.ifc_definition_id
-                    op.query = item.selection_query
             else:
                 op = row.operator("bim.select_group_products", text="", icon="RESTRICT_SELECT_OFF")
                 op.group = group_id
@@ -157,10 +154,6 @@ class BIM_UL_groups(UIList):
                 op.group = group_id
                 op = row.operator("bim.remove_group", text="", icon="X")
                 op.group = group_id
-                if item.selection_query != "":
-                    op = row.operator("bim.update_group", text="", icon="FILE_REFRESH")
-                    op.group_id = item.ifc_definition_id
-                    op.query = item.selection_query
 
 
 class BIM_UL_object_groups(UIList):

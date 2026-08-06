@@ -41,17 +41,15 @@ class BrickschemaData:
         cls.is_loaded = True
         cls.data = {
             "is_loaded": cls.get_is_loaded(),
-            "attributes": cls.attributes(),
-            "namespaces": cls.namespaces(),
-            "brick_equipment_classes": cls.brick_equipment_classes(),
+            "active_relations": cls.active_relations(),
         }
 
     @classmethod
     def get_is_loaded(cls):
-        return BrickStore.graph is not None
+        return BrickStore.graph is not None  # `if BrickStore.graph` by itself takes ages.
 
     @classmethod
-    def attributes(cls):
+    def active_relations(cls):
         if BrickStore.graph is None:
             return []
         props = bpy.context.scene.BIMBrickProperties
@@ -59,76 +57,73 @@ class BrickschemaData:
             brick = props.bricks[props.active_brick_index]
         except:
             return []
-        results = []
         uri = brick.uri
+        namespace = str(uri.split("#")[0])
+        if namespace == "https://brickschema.org/schema/Brick":
+            return []
+        results = []
         query = BrickStore.graph.query(
             """
             PREFIX brick: <https://brickschema.org/schema/Brick#>
             PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
             PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-            SELECT DISTINCT ?name ?value ?sp ?sv WHERE {
-               <{uri}> ?name ?value .
-               OPTIONAL {
-               { ?name rdfs:range brick:TimeseriesReference . }
-                UNION
-               { ?name a brick:EntityProperty . }
-                ?value ?sp ?sv }
+            SELECT DISTINCT ?predicate ?object ?label ?sp ?sv  WHERE {
+                <{uri}> ?predicate ?object .
+                OPTIONAL {
+                    ?object rdfs:label ?label . 
+                }
+                OPTIONAL {
+                    { ?predicate rdfs:range brick:TimeseriesReference . }
+                    UNION
+                    { ?predicate a brick:EntityProperty . }
+                    ?object ?sp ?sv .
+                }
             }
+            GROUP BY ?object
         """.replace(
                 "{uri}", uri
             )
         )
-
         for row in query:
-            name = row.get("name").toPython().split("#")[-1]
-            value = row.get("value")
+            predicate_uri = row.get("predicate")
+            predicate_name = predicate_uri.toPython().split("#")[-1]
+            object_uri = row.get("object")
+            object_name = row.get("label")
+            if not object_name:
+                if isinstance(object_uri, BNode):
+                    object_name = "[]"
+                else:
+                    try:
+                        object_name = object_uri.toPython().split("#")[-1]
+                    except:
+                        object_name = str(object_uri)
             results.append(
                 {
-                    "name": name,
-                    "value": value.toPython().split("#")[-1],
-                    "is_uri": isinstance(value, URIRef),
-                    "value_uri": value.toPython(),
-                    "is_globalid": name == "globalID",
+                    "predicate_uri": predicate_uri,
+                    "predicate_name": predicate_name,
+                    "object_uri": object_uri,
+                    "object_name": object_name,
+                    "is_uri": isinstance(object_uri, URIRef),
+                    "is_globalid": predicate_name == "ifcGlobalID",
                 }
             )
-            if isinstance(row.get("value"), BNode):
-                for s, p, o in BrickStore.graph.triples((value, None, None)):
+            if isinstance(object_uri, BNode):
+                for subject2, predicate2, object2 in BrickStore.graph.triples((object_uri, None, None)):
+                    predicate2_name = predicate2.toPython().split("#")[-1]
+                    try:
+                        object2_name = object2.toPython().split("#")[-1]
+                    except:
+                        object2_name = str(object2)
                     results.append(
                         {
-                            "name": name + ":" + p.toPython().split("#")[-1],
-                            "value": o.toPython().split("#")[-1],
-                            "is_uri": isinstance(o, URIRef),
-                            "value_uri": o.toPython(),
-                            "is_globalid": p.toPython().split("#")[-1] == "globalID",
+                            "predicate_uri": None,
+                            "predicate_name": predicate_name + ":" + predicate2_name,
+                            "object_uri": object2,
+                            "object_name": object2_name,
+                            "is_uri": isinstance(object2, URIRef),
+                            "is_globalid": predicate2_name == "ifcGlobalID",
                         }
                     )
-        return results
-
-    @classmethod
-    def namespaces(cls):
-        if BrickStore.graph is None:
-            return []
-        results = []
-        for alias, uri in BrickStore.graph.namespaces():
-            results.append((uri, f"{alias}: {uri}", ""))
-        return results
-
-    @classmethod
-    def brick_equipment_classes(cls):
-        if BrickStore.graph is None:
-            return []
-        results = []
-        query = BrickStore.graph.query(
-            """
-            PREFIX brick: <https://brickschema.org/schema/Brick#>
-            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-            SELECT ?class WHERE {
-                ?class rdfs:subClassOf* brick:Equipment .
-            }
-        """
-        )
-        for uri in sorted([x[0].toPython() for x in query]):
-            results.append((uri, uri.split("#")[-1], ""))
         return results
 
 
@@ -154,7 +149,7 @@ class BrickschemaReferencesData:
         for library in ifc.by_type("IfcLibraryInformation"):
             if tool.Ifc.get_schema() == "IFC2X3":
                 results.append((str(library.id()), library.Name or "Unnamed", ""))
-            elif ".ttl" in library.Location:
+            elif library.Location and ".ttl" in library.Location:
                 results.append((str(library.id()), library.Name or "Unnamed", ""))
         return results
 

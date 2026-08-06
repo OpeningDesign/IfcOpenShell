@@ -21,13 +21,21 @@ from . import ui, prop, operator
 
 classes = (
     operator.AddClassification,
+    operator.AddClassificationFromBSDD,
     operator.AddClassificationReference,
+    operator.AddClassificationReferenceFromBSDD,
+    operator.AddManualClassification,
+    operator.AddManualClassificationReference,
     operator.ChangeClassificationLevel,
+    operator.DisableAddingManualClassification,
+    operator.DisableAddingManualClassificationReference,
     operator.DisableEditingClassification,
     operator.DisableEditingClassificationReference,
     operator.DisableEditingClassificationReferences,
     operator.EditClassification,
     operator.EditClassificationReference,
+    operator.EnableAddingManualClassification,
+    operator.EnableAddingManualClassificationReference,
     operator.EnableEditingClassification,
     operator.EnableEditingClassificationReference,
     operator.LoadClassificationLibrary,
@@ -46,11 +54,11 @@ classes = (
 
 def register():
     bpy.types.Scene.BIMClassificationProperties = bpy.props.PointerProperty(type=prop.BIMClassificationProperties)
-    bpy.types.Object.BIMClassificationReferenceProperties = bpy.props.PointerProperty(
+    bpy.types.Scene.BIMClassificationReferenceProperties = bpy.props.PointerProperty(
         type=prop.BIMClassificationReferenceProperties
     )
 
 
 def unregister():
     del bpy.types.Scene.BIMClassificationProperties
-    del bpy.types.Object.BIMClassificationReferenceProperties
+    del bpy.types.Scene.BIMClassificationReferenceProperties

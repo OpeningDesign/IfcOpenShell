@@ -30,7 +30,9 @@ from bpy.props import (
     FloatVectorProperty,
     CollectionProperty,
 )
-
+import blenderbim.core.brick as core
+import blenderbim.tool.brick as tool
+from blenderbim.tool.brick import BrickStore
 
 def update_active_brick_index(self, context):
     BrickschemaData.is_loaded = False
@@ -43,15 +45,35 @@ def get_libraries(self, context):
 
 
 def get_namespaces(self, context):
-    if not BrickschemaData.is_loaded:
-        BrickschemaData.load()
-    return BrickschemaData.data["namespaces"]
+    return [(uri, f"{alias}: {uri}", "") for alias, uri in BrickStore.namespaces]
 
 
-def get_brick_equipment_classes(self, context):
-    if not BrickschemaData.is_loaded:
-        BrickschemaData.load()
-    return BrickschemaData.data["brick_equipment_classes"]
+def get_brick_entity_classes(self, context):
+    entity = self.brick_entity_create_type
+    return [(uri, uri.split("#")[-1], "") for uri in BrickStore.entity_classes[entity]]
+
+
+def get_brick_roots(self, context): 
+    return [(root, root, "") for root in BrickStore.root_classes]
+
+
+def get_brick_relations(self, context):
+    relations = [(uri, uri.split("#")[-1], "") for uri in BrickStore.relationships]
+    for relation in BrickschemaData.data["active_relations"]:
+        if relation["predicate_name"] == "label":
+            return relations
+    relations.append(("http://www.w3.org/2000/01/rdf-schema#label", "label", ""))
+    return relations
+    
+
+
+def update_view(self, context):
+    root = context.scene.BIMBrickProperties.brick_list_root
+    core.set_brick_list_root(tool.Brick, brick_root=root, split_screen=False)
+
+def split_screen_update_view(self, context):
+    root = context.scene.BIMBrickProperties.split_screen_brick_list_root
+    core.set_brick_list_root(tool.Brick, brick_root=root, split_screen=True)
 
 
 class Brick(PropertyGroup):
@@ -67,5 +89,26 @@ class BIMBrickProperties(PropertyGroup):
     bricks: CollectionProperty(name="Bricks", type=Brick)
     active_brick_index: IntProperty(name="Active Brick Index", update=update_active_brick_index)
     libraries: EnumProperty(name="Libraries", items=get_libraries)
+    set_list_root_toggled: BoolProperty(name="Set List Root Toggled", default=False)
+    brick_list_root: EnumProperty(name="Brick List Root", items=get_brick_roots, update=update_view)
+    # namespace manager
     namespace: EnumProperty(name="Namespace", items=get_namespaces)
-    brick_equipment_class: EnumProperty(name="Brick Equipment Class", items=get_brick_equipment_classes)
+    new_brick_namespace_alias: StringProperty(name="New Brick Namespace Alias")
+    new_brick_namespace_uri: StringProperty(name="New Brick Namespace URI")
+    # create brick entity
+    new_brick_label: StringProperty(name="New Brick Label")
+    brick_entity_create_type: EnumProperty(name="Brick Entity Types", items=get_brick_roots)
+    brick_entity_class: EnumProperty(name="Brick Equipment Class", items=get_brick_entity_classes)
+    # create relations
+    brick_create_relations_toggled: BoolProperty(name="Brick Create Relations Toggled", default=False)
+    brick_edit_relations_toggled: BoolProperty(name="Brick Edit Relations Toggled", default=False)
+    new_brick_relation_type: EnumProperty(name="New Brick Relation Type", items=get_brick_relations)
+    new_brick_relation_object: StringProperty(name="New Brick Relation Object")
+    add_brick_relation_failed: BoolProperty(name="Add Relation Failed", default=False)
+    # create relations split screen
+    split_screen_toggled: BoolProperty(name="Split Screen Toggled", default=False)
+    split_screen_bricks: CollectionProperty(name="Split Screen Bricks", type=Brick)
+    split_screen_active_brick_index: IntProperty(name="Split Screen Active Brick Index", update=update_active_brick_index)
+    split_screen_active_brick_class: StringProperty(name="Split Screen Active Brick Class")
+    split_screen_brick_breadcrumbs: CollectionProperty(name="Split Screen Brick Breadcrumbs", type=StrProperty)
+    split_screen_brick_list_root: EnumProperty(name="Split Screen Brick List Root", items=get_brick_roots, update=split_screen_update_view)

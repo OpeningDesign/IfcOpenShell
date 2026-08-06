@@ -15,15 +15,37 @@
 #
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
+import ifcopenshell
+from typing import Any
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"role": None, "attributes": {}}
-        for key, value in settings.items():
-            self.settings[key] = value
+def edit_role(file: ifcopenshell.file, role: ifcopenshell.entity_instance, attributes: dict[str, Any]) -> None:
+    """Edits the attributes of an IfcActorRole
 
-    def execute(self):
-        for name, value in self.settings["attributes"].items():
-            setattr(self.settings["role"], name, value)
+    For more information about the attributes and data types of an
+    IfcActorRole, consult the IFC documentation.
+
+    :param role: The IfcActorRole entity you want to edit
+    :type role: ifcopenshell.entity_instance
+    :param attributes: a dictionary of attribute names and values.
+    :type attributes: dict
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        person = ifcopenshell.api.run("owner.add_person", model,
+            identification="bobthebuilder", family_name="Thebuilder", given_name="Bob")
+
+        # By default, the role is an architect
+        role = ifcopenshell.api.run("owner.add_role", model, assigned_object=person)
+
+        # But Bob is not an architect
+        ifcopenshell.api.run("owner.edit_role", model, role=role, attributes={"Role": "CONSTRUCTIONMANAGER"})
+    """
+    settings = {"role": role, "attributes": attributes}
+
+    for name, value in settings["attributes"].items():
+        setattr(settings["role"], name, value)

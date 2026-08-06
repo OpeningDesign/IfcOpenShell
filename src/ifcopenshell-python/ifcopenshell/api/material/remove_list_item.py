@@ -19,14 +19,43 @@
 import ifcopenshell
 
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"material_list": None, "material_index": None}
-        for key, value in settings.items():
-            self.settings[key] = value
+def remove_list_item(
+    file: ifcopenshell.file, material_list: ifcopenshell.entity_instance, material_index: int = 0
+) -> None:
+    """Removes an item in an material list
 
-    def execute(self):
-        materials = list(self.settings["material_list"].Materials)
-        materials.pop(self.settings["material_index"])
-        self.settings["material_list"].Materials = materials
+    Note that it is invalid to have zero items in a list, so you should leave
+    at least one item to ensure a valid IFC dataset.
+
+    :param material_list: The IfcMaterialList entity you want to remove an
+        item from.
+    :type material_list: ifcopenshell.entity_instance
+    :param material_index: The index of the material you want to remove from
+        the list. Starts counting at 0. Defaults to 0.
+    :type material_index: int, optional
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        # Create a material list for aluminium windows.
+        material_set = ifcopenshell.api.run("material.add_material_set", model,
+            name="Window", set_type="IfcMaterialMaterialList")
+
+        aluminium = ifcopenshell.api.run("material.add_material", model, name="AL01", category="aluminium")
+        glass = ifcopenshell.api.run("material.add_material", model, name="GLZ01", category="glass")
+
+        # Now let's use those materials as two items in our list.
+        ifcopenshell.api.run("material.add_list_item", model, material_list=material_set, material=aluminium)
+        ifcopenshell.api.run("material.add_list_item", model, material_list=material_set, material=glass)
+
+        # Let's remove the glass
+        ifcopenshell.api.run("material.remove_list_item", model, material_list=material_set, material_index=1)
+    """
+    settings = {"material_list": material_list, "material_index": material_index}
+
+    materials = list(settings["material_list"].Materials)
+    materials.pop(settings["material_index"])
+    settings["material_list"].Materials = materials

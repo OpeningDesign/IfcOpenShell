@@ -16,16 +16,29 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
 
+import ifcopenshell
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
 
-    def execute(self):
-        map_conversion = self.file.by_type("IfcMapConversion")[0]
-        projected_crs = self.file.by_type("IfcProjectedCRS")[0]
-        if projected_crs.MapUnit and len(self.file.get_inverse(projected_crs.MapUnit)) == 1:
-            # TODO: go deeper for conversion units
-            self.file.remove(projected_crs.MapUnit)
-        self.file.remove(projected_crs)
-        self.file.remove(map_conversion)
+def remove_georeferencing(file: ifcopenshell.file) -> None:
+    """Remove georeferencing data
+
+    All georeferencing parameters such as projected CRS and map conversion
+    data will be lost.
+
+    :return: None
+    :rtype: None
+
+    Example:
+
+        ifcopenshell.api.run("georeference.add_georeferencing", model)
+        # Let's change our mind
+        ifcopenshell.api.run("georeference.remove_georeferencing", model)
+    """
+
+    map_conversion = file.by_type("IfcMapConversion")[0]
+    projected_crs = file.by_type("IfcProjectedCRS")[0]
+    if projected_crs.MapUnit and len(file.get_inverse(projected_crs.MapUnit)) == 1:
+        # TODO: go deeper for conversion units
+        file.remove(projected_crs.MapUnit)
+    file.remove(projected_crs)
+    file.remove(map_conversion)

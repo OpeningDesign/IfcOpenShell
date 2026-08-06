@@ -16,15 +16,38 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
 
+import ifcopenshell
+import ifcopenshell.util.element
 
-class Usecase:
-    def __init__(self, file, **settings):
-        self.file = file
-        self.settings = {"reference": None}
-        for key, value in settings.items():
-            self.settings[key] = value
 
-    def execute(self):
-        for rel in self.settings["reference"].LibraryRefForObjects:
-            self.file.remove(rel)
-        self.file.remove(self.settings["reference"])
+def remove_reference(file: ifcopenshell.file, reference: ifcopenshell.entity_instance) -> None:
+    """Removes a library reference
+
+    Any products which have relationships to this reference will not be
+    removed.
+
+    :param reference: The IfcLibraryReference entity you want to remove
+    :type reference: ifcopenshell.entity_instance
+    :return: None
+    :rtype: None
+
+    Example:
+
+    .. code:: python
+
+        library = ifcopenshell.api.run("library.add_library", model, name="Brickschema")
+        reference = ifcopenshell.api.run("library.add_reference", model, library=library)
+        # Let's change our mind and remove it.
+        ifcopenshell.api.run("library.remove_reference", model, reference=reference)
+    """
+    if file.schema != "IFC2X3":
+        rels = reference.LibraryRefForObjects
+    else:
+        rels = [rel for rel in file.by_type("IfcRelAssociatesLibrary") if rel.RelatingLibrary == reference]
+
+    for rel in rels:
+        history = rel.OwnerHistory
+        file.remove(rel)
+        if history:
+            ifcopenshell.util.element.remove_deep2(file, history)
+    file.remove(reference)
