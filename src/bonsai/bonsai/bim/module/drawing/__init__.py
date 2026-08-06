@@ -120,6 +120,7 @@ classes = (
     operator.DrawParametricDimension,
     operator.SetDimensionAnchor,
     operator.RegenerateDimensions,
+    operator.DriveDimensionLength,
     operator.RemoveDimensionAnchor,
     operator.InsertDimensionAnchor,
     operator.ClickNearestDimensionAnchor,
@@ -189,8 +190,10 @@ classes = (
     gizmos.ExtrusionGuidesGizmo,
     gizmos.ExtrusionWidget,
     gizmos.GizmoAnchorHandle,
+    gizmos.GizmoDriveDimLabel,
     gizmos.DimensionAnchorWidget,
     gizmos.DimensionLinePositionWidget,
+    gizmos.DimensionDriveLabelWidget,
     workspace.LaunchAnnotationTypeManager,
     workspace.Hotkey,
 )
