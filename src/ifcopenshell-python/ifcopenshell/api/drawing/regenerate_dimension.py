@@ -136,9 +136,8 @@ def regenerate_dimension(
     # horizontal offset axis (perpendicular to the dimension direction).  Applied after
     # the pset write so anchor["pt"] always stores the true geometry surface hit.
     # Because it is absolute, the dimension line stays put even if the geometry moves.
-    # Only active when ForcePerpendicularToFace is also set — the two are semantically coupled.
     line_position = pset_data.get("LinePosition")
-    if line_position is not None and pset_data.get("ForcePerpendicularToFace") and resolved:
+    if line_position is not None and resolved:
         face_normal = _get_anchor_face_normal_world(file, anchors[0], placement_override)
         offset_dir = _get_line_offset_direction(face_normal, [pt for pt in resolved if pt is not None])
         if offset_dir:
