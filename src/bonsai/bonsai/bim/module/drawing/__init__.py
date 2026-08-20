@@ -112,6 +112,7 @@ classes = (
     operator.SelectAllSheets,
     operator.SelectAssignedAnnotations,
     operator.SelectAssignedProduct,
+    operator.SelectSharedAnnotations,
     operator.SelectSimilarTextLiteralValue,
     operator.ToggleTargetView,
     operator.ToggleDrawingCategorySelection,
