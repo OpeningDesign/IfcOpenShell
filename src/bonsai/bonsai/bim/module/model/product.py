@@ -707,6 +707,14 @@ class TrueMirrorElements(bpy.types.Operator, tool.Ifc.Operator):
         if mirror_ref is None:
             objs_to_mirror = list(context.selected_objects)
 
+        # Auto-expand: if an assembly is selected, also select its parts so the
+        # duplicate step clones the whole group and each part gets mirrored.
+        for obj in list(objs_to_mirror):
+            for part_obj in self._aggregate_parts(obj):
+                if part_obj not in objs_to_mirror and part_obj != mirror_ref:
+                    part_obj.select_set(True)
+                    objs_to_mirror.append(part_obj)
+
         if self.keep_original:
             if mirror_ref:
                 mirror_ref.select_set(False)
@@ -715,9 +723,38 @@ class TrueMirrorElements(bpy.types.Operator, tool.Ifc.Operator):
             if mirror_ref:
                 mirror_ref.select_set(True)
 
+        # Process assembly containers before their parts so that when a part's
+        # edit_object_placement writes the relative-to-assembly offset, the assembly's
+        # own IFC placement is already at the mirrored position.
+        def _agg_depth(obj):
+            element = tool.Ifc.get_entity(obj)
+            depth = 0
+            while element:
+                rels = getattr(element, "Decomposes", None) or []
+                if not rels:
+                    break
+                element = rels[0].RelatingObject
+                depth += 1
+            return depth
+
+        objs_to_mirror.sort(key=_agg_depth)
+
         for obj in objs_to_mirror:
             self.mirror_obj(context, obj, mirror_ref)
         return {"FINISHED"}
+
+    @staticmethod
+    def _aggregate_parts(obj):
+        """Yield Blender objects for all direct and nested parts of an aggregate."""
+        element = tool.Ifc.get_entity(obj)
+        if not element:
+            return
+        for rel in getattr(element, "IsDecomposedBy", []) or []:
+            for part in rel.RelatedObjects:
+                part_obj = tool.Ifc.get_object(part)
+                if part_obj:
+                    yield part_obj
+                    yield from TrueMirrorElements._aggregate_parts(part_obj)
 
     def mirror_obj(self, context: bpy.types.Context, obj: bpy.types.Object, mirror_ref: bpy.types.Object = None):
         element = tool.Ifc.get_entity(obj)
@@ -882,12 +919,14 @@ class TrueMirrorElements(bpy.types.Operator, tool.Ifc.Operator):
         # bonsai does not automatically switch to the representation that should be active in the given context
         # when switching to a type that was previously viewed in another context (e.g. plan view),
         # the wrong representation will be used.
-        bonsai.core.geometry.switch_representation(
-            tool.Ifc,
-            tool.Geometry,
-            obj=obj,
-            representation=ifcopenshell.util.representation.get_representation(element, active_context),
-        )
+        # Skip for elements with no representation (e.g. IfcElementAssembly container objects).
+        if element.Representation:
+            bonsai.core.geometry.switch_representation(
+                tool.Ifc,
+                tool.Geometry,
+                obj=obj,
+                representation=ifcopenshell.util.representation.get_representation(element, active_context),
+            )
 
         # For LAYER2/LAYER3 elements, _apply_opening_mirror computes opening positions
         # relative to the wall's pre-move IFC origin.  When the wall's Blender matrix is
@@ -1086,14 +1125,10 @@ class TrueMirrorElements(bpy.types.Operator, tool.Ifc.Operator):
                 oc = getattr(sw, "OuterCurve", None) if sw else None
                 if oc and oc.is_a("IfcIndexedPolyCurve"):
                     # Profile coords live in the Position frame, which may be rotated within
-                    # element-local XY.  Applying H_2d directly to profile coords is only correct
-                    # when RefDirection == element X.  The general form is a change-of-basis:
-                    #   T = A_2d^T @ H_2d @ A_2d
-                    # where A_2d = [RefDir_2d | Y_2d] (the Position frame in element-local 2D).
-                    # For axis-aligned RefDir (the common slab case) T == H_2d; for rotated RefDir
-                    # T accounts for the frame orientation without touching RefDirection itself.
+                    # element-local XY.  T = A_2d^T @ H_2d @ A_2d correctly transforms coords
+                    # in the Position frame into element-local XY.  For axis-aligned RefDir, T == H_2d.
                     # RefDirection and Axis must NOT be updated — updating them double-flips the
-                    # geometry for axis-aligned RefDir slabs (the two flips cancel, giving no mirror).
+                    # geometry for axis-aligned RefDir elements (the two flips cancel, giving no mirror).
                     pos_H_2d = H_2d
                     if item.Position is not None and item.Position.RefDirection is not None:
                         ref_ratios = item.Position.RefDirection.DirectionRatios
@@ -1108,19 +1143,39 @@ class TrueMirrorElements(bpy.types.Operator, tool.Ifc.Operator):
                         A_2d = np.column_stack([refdir_2d, y_2d])
                         if abs(np.linalg.det(A_2d)) > 1e-6:
                             pos_H_2d = A_2d.T @ H_2d @ A_2d
-                    def _apply_pos_H2d(ipc):
-                        pts = ipc.Points
+
+                    # Create new IFC entities instead of mutating shared ones.
+                    # override_object_duplicate_move shallow-copies the body representation,
+                    # so SweptArea / OuterCurve / Points are shared between source and mirror.
+                    # Mutating CoordList in-place would corrupt the source geometry.
+                    ifc = tool.Ifc.get()
+                    def _new_ipc_from(ipc):
                         new_coords = []
-                        for co in pts.CoordList:
+                        for co in ipc.Points.CoordList:
                             xy = pos_H_2d @ np.array(co[:2], dtype=float)
                             new_coords.append([float(xy[0]), float(xy[1])] + list(co[2:]))
-                        pts.CoordList = new_coords
-                    _apply_pos_H2d(oc)
-                    for inner in getattr(sw, "InnerCurves", None) or []:
-                        if inner.is_a("IfcIndexedPolyCurve"):
-                            _apply_pos_H2d(inner)
-                    # Mirror Position.Location only (RefDirection and Axis are intentionally
-                    # left unchanged — see comment above)
+                        new_pts = ifc.createIfcCartesianPointList2D(new_coords)
+                        return ifc.createIfcIndexedPolyCurve(
+                            new_pts,
+                            getattr(ipc, "Segments", None),
+                            getattr(ipc, "SelfIntersect", None),
+                        )
+
+                    new_oc = _new_ipc_from(oc)
+                    if sw.is_a("IfcArbitraryProfileDefWithVoids"):
+                        new_inners = [
+                            _new_ipc_from(inner) if inner.is_a("IfcIndexedPolyCurve") else inner
+                            for inner in (sw.InnerCurves or [])
+                        ]
+                        new_sw = ifc.createIfcArbitraryProfileDefWithVoids(
+                            sw.ProfileType, sw.ProfileName, new_oc, new_inners
+                        )
+                    else:
+                        new_sw = ifc.createIfcArbitraryClosedProfileDef(
+                            sw.ProfileType, sw.ProfileName, new_oc
+                        )
+                    item.SweptArea = new_sw
+                    # Mirror Position.Location only (RefDirection and Axis intentionally unchanged)
                     if item.Position is not None:
                         base = list(item.Position.Location.Coordinates)
                         xy = H_2d @ np.array(base[:2], dtype=float)
