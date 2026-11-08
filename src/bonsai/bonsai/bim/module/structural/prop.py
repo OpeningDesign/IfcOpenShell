@@ -34,6 +34,7 @@ from bpy.types import PropertyGroup
 from bonsai.bim.module.structural.data import (
     BoundaryConditionsData,
     LoadGroupDecorationData,
+    StructuralAnalysisModelsData,
     StructuralLoadCasesData,
     StructuralLoadsData,
 )
@@ -44,6 +45,12 @@ def get_load_groups_to_show(self: "BIMStructuralProperties", context: bpy.types.
     if not LoadGroupDecorationData.is_loaded:
         LoadGroupDecorationData.load()
     return LoadGroupDecorationData.data["load_groups_to_show"]
+
+
+def get_buildings(self: "BIMStructuralProperties", context: bpy.types.Context) -> list[tuple[str, str, str]]:
+    if not StructuralAnalysisModelsData.is_loaded:
+        StructuralAnalysisModelsData.load()
+    return StructuralAnalysisModelsData.data["buildings"]
 
 
 def update_activity_type(self: "BIMStructuralProperties", context: bpy.types.Context) -> None:
@@ -161,6 +168,7 @@ class BIMStructuralProperties(PropertyGroup):
     structural_analysis_models: CollectionProperty(name="Structural Analysis Models", type=StructuralAnalysisModel)
     active_structural_analysis_model_index: IntProperty(name="Active Structural Analysis Model Index")
     active_structural_analysis_model_id: IntProperty(name="Active Structural Analysis Model Id")
+    building: EnumProperty(items=get_buildings, name="Building")
     load_case_editing_type: StringProperty(name="Load Case Editing Type")
     load_case_attributes: CollectionProperty(name="Load Case Attributes", type=Attribute)
     active_load_case_id: IntProperty(name="Active Load Case Id")
@@ -219,6 +227,7 @@ class BIMStructuralProperties(PropertyGroup):
         structural_analysis_models: bpy.types.bpy_prop_collection_idprop[StructuralAnalysisModel]
         active_structural_analysis_model_index: int
         active_structural_analysis_model_id: int
+        building: str
         load_case_editing_type: str
         load_case_attributes: bpy.types.bpy_prop_collection_idprop[Attribute]
         active_load_case_id: int
