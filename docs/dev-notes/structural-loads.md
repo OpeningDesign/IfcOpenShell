@@ -621,14 +621,37 @@ points, where the piston, and the arrow's shaft, are on the Q8′ side.
   its arm, is now an input in the Moment Arm section, and clicking s₁ opens it. Typing it slides A
   parallel to the line of action, keeping d; a kept moment never finds it, so it has no lock.
 
+## 32. Moment drawings that read
+
+From Problem 2.19, six level forces at points straight above A: each force's r, d and M were labelled
+halfway along its arm, and as the arms share one line, each landed beside another force's point; r, d and
+Δz were all the same length, labelled three times; and every force was F₁, numbered at its own point.
+
+- **A moment beside its force.** Each force's moment is drawn on its value's line, just after it, as
+  "Fx₆ = 5 kN   M₆ = −120 kN.m", whether the force is labelled as itself or, drawn alone, by its one
+  component. In the viewport the decorator places it after the value it `follows`; it stays its own label,
+  clicked to edit A.
+- **Forces numbered as their moments.** While moments are taken about A, the viewport numbers forces
+  across the load case, as moments are, not from 1 at each point; a report's points keep their own, as
+  their equations do.
+- **A flat triangle drawn once.** A line of action square to r leaves no triangle: r is the arm, drawn and
+  labelled once, as "d = r", with no φ or α.
+- **A dimension for the arm.** A level force's arm is its Δz and a plumb one's its Δx, so that dimension is
+  named "d = Δz" and the arm has no label of its own.
+- **Dimensions named at their ends.** Several forces' dimensions from A lie over each other, so each is
+  named at its end, by its force's point; a single force's stays at its middle.
+
 ## Next
 
-Load combinations (a load group of type `LOAD_COMBINATION` holding load cases through
-`IfcRelAssignsToGroupByFactor`), then analysis, as in Decisions. Show Loads already reads
-the factors, so combinations need a panel to create them, add cases with factors and assign
-them to the current model; PyNite takes them as `add_load_combo`. When combinations come, fix
-`recursive_subgroups` in `load_decoration_data.py`, which multiplies factors cumulatively
-across a group's relationships, so that 1.2 D + 1.6 L would draw the live load at 1.92.
+Load combinations, then analysis, as in Decisions. The library side is in v0.9.0: #10171 added
+`structural.add_structural_load_combination`, `assign_structural_load_combination` (a load case
+in with a factor, cases sharing a factor sharing one `IfcRelAssignsToGroupByFactor`) and
+`unassign_structural_load_combination`, and fixed removing a combination or one of its cases.
+#10172 fixed `recursive_subgroups` in `load_decoration_data.py`, which drew 1.35 D + 1.5 L's
+live load at 2.025. So Show Loads already draws a combination's factored loads. What is left is
+the panel: create a combination, add cases with factors, assign it to the current model, and
+list it with the load cases. A combination is already offered in Show Loads' choice, marked
+"(combination)", once the model is loaded by it. PyNite takes them as `add_load_combo`.
 
 Later, for rigid bodies: **ΣFx, ΣFz and ΣM_A solved together.** Edit Resultant solves the two
 force equations for two unknowns, and a resultant moment the moment equation for one. Together
